@@ -241,7 +241,11 @@ void BLDC_Init(void) {
   rtP_Left.z_ctrlTypSel         = CTRL_TYP_SEL;
   rtP_Left.b_diagEna            = DIAG_ENA;
   rtP_Left.i_max                = (I_MOT_MAX * A2BIT_CONV) << 4;        // fixdt(1,16,4)
+  #ifdef(SAFE_MODE_SPEED)
+  rtP_Left.n_max  = (int16_t)pow(((double)SAFE_MODE_DIA * (double)SAFE_MODE_SPEED * SAFE_MODE_CONSTANT), -1) <<4;
+  #else
   rtP_Left.n_max                = N_MOT_MAX << 4;                       // fixdt(1,16,4)
+  #endif
   rtP_Left.b_fieldWeakEna       = FIELD_WEAK_ENA; 
   rtP_Left.id_fieldWeakMax      = (FIELD_WEAK_MAX * A2BIT_CONV) << 4;   // fixdt(1,16,4)
   rtP_Left.a_phaAdvMax          = PHASE_ADV_MAX << 4;                   // fixdt(1,16,4)
@@ -479,7 +483,8 @@ void calcAvgSpeed(void) {
  * - move the potentiometers freely to the min and max limits repeatedly
  * - release potentiometers to the resting postion
  * - press the power button to confirm or wait for the 20 sec timeout
- * The Values will be saved to flash. Values are persistent if you flash with platformio. To erase them, make a full chip erase.
+ * The Values will be saved to flash. Values are persistent if you flash with platformio. 
+ * To erase them, make a full chip erase.
  */
 void adcCalibLim(void) {
   calcAvgSpeed();
@@ -570,6 +575,19 @@ void adcCalibLim(void) {
   #endif
 
 #endif
+}
+/*
+* Turn off safe mode by setting the maximum speed back to defaults
+* Procedure:
+* - press the power button for more than 5 sec and immediatelly after the beep sound press one more time shortly
+*/
+void safeModeOff(void)  {
+  calcAvgSpeed();
+  if (speedAvgAbs > 5) {    // do not enter this mode if motors are spinning
+    return;
+  }
+  rtP_Left.n_max = rtP_Right.n_max  = (N_MOT_MAX << 4);                
+
 }
  /*
  * Update Maximum Motor Current Limit (via ADC1) and Maximum Speed Limit (via ADC2)
@@ -1526,7 +1544,11 @@ void poweroffPressCheck(void) {
         if (HAL_GPIO_ReadPin(BUTTON_PORT, BUTTON_PIN)) {  // Double press: Adjust Max Current, Max Speed
           while(HAL_GPIO_ReadPin(BUTTON_PORT, BUTTON_PIN)) { HAL_Delay(10); }
           beepLong(8);
+          #ifdef(SAFE_MODE_SPEED)
+          safeModeOff();
+          #else
           updateCurSpdLim();
+          #endif
           beepShort(5);
         } else {                                          // Long press: Calibrate ADC Limits
           beepLong(16); 
@@ -1534,6 +1556,9 @@ void poweroffPressCheck(void) {
           beepShort(5);
         }
       } else if (cnt_press > 8) {                         // Short press: power off (80 ms debounce)
+        poweroff();
+      }
+ else if (cnt_press > 8) {                         // Short press: power off (80 ms debounce)
         poweroff();
       }
     }
