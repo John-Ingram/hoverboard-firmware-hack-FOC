@@ -1544,7 +1544,7 @@ void poweroffPressCheck(void) {
         if (HAL_GPIO_ReadPin(BUTTON_PORT, BUTTON_PIN)) {  // Double press: Adjust Max Current, Max Speed
           while(HAL_GPIO_ReadPin(BUTTON_PORT, BUTTON_PIN)) { HAL_Delay(10); }
           beepLong(8);
-          #ifdef(SAFE_MODE_SPEED)
+          #if defined(SAFE_MODE_SPEED)
           safeModeOff();
           #else
           updateCurSpdLim();
