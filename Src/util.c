@@ -241,7 +241,7 @@ void BLDC_Init(void) {
   rtP_Left.z_ctrlTypSel         = CTRL_TYP_SEL;
   rtP_Left.b_diagEna            = DIAG_ENA;
   rtP_Left.i_max                = (I_MOT_MAX * A2BIT_CONV) << 4;        // fixdt(1,16,4)
-  #ifdef(SAFE_MODE_SPEED)
+  #if defined(SAFE_MODE_SPEED)
   rtP_Left.n_max  = (int16_t)pow(((double)SAFE_MODE_DIA * (double)SAFE_MODE_SPEED * SAFE_MODE_CONSTANT), -1) <<4;
   #else
   rtP_Left.n_max                = N_MOT_MAX << 4;                       // fixdt(1,16,4)
