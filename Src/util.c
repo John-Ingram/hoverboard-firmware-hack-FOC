@@ -241,7 +241,11 @@ void BLDC_Init(void) {
   rtP_Left.z_ctrlTypSel         = CTRL_TYP_SEL;
   rtP_Left.b_diagEna            = DIAG_ENA;
   rtP_Left.i_max                = (I_MOT_MAX * A2BIT_CONV) << 4;        // fixdt(1,16,4)
+  #if defined(SAFE_MODE_RPM)
+  rtP_Left.n_max                = 2000 << 4;                       // fixdt(1,16,4)
+  #else
   rtP_Left.n_max                = N_MOT_MAX << 4;                       // fixdt(1,16,4)
+  #endif
   rtP_Left.b_fieldWeakEna       = FIELD_WEAK_ENA; 
   rtP_Left.id_fieldWeakMax      = (FIELD_WEAK_MAX * A2BIT_CONV) << 4;   // fixdt(1,16,4)
   rtP_Left.a_phaAdvMax          = PHASE_ADV_MAX << 4;                   // fixdt(1,16,4)
@@ -570,6 +574,23 @@ void adcCalibLim(void) {
   #endif
 
 #endif
+}
+/*
+* Turn off safe mode by setting the maximum speed back to defaults
+* Procedure:
+* - press the power button for more than 5 sec and immediatelly after the beep sound press one more time shortly
+*/
+void safeModeOff(void)  {
+  calcAvgSpeed();
+  if (speedAvgAbs > 5) {    // do not enter this mode if motors are spinning
+    return;
+  }
+  rtP_Left.n_max = rtP_Right.n_max  = (N_MOT_MAX << 4);  
+  beepShort(5);
+  beepShort(5);
+  beepShort(5);
+  beepShort(5);              
+
 }
  /*
  * Update Maximum Motor Current Limit (via ADC1) and Maximum Speed Limit (via ADC2)
@@ -1526,7 +1547,17 @@ void poweroffPressCheck(void) {
         if (HAL_GPIO_ReadPin(BUTTON_PORT, BUTTON_PIN)) {  // Double press: Adjust Max Current, Max Speed
           while(HAL_GPIO_ReadPin(BUTTON_PORT, BUTTON_PIN)) { HAL_Delay(10); }
           beepLong(8);
+          beepLong(8);
+          beepLong(8);
+          beepLong(8);
+          beepLong(8);
+          beepLong(8);
+          beepLong(8);
+          #if defined(SAFE_MODE_RPM)
+          safeModeOff();
+          #else
           updateCurSpdLim();
+          #endif
           beepShort(5);
         } else {                                          // Long press: Calibrate ADC Limits
           beepLong(16); 

@@ -1,0 +1,1518 @@
+ARM GAS  /tmp/ccTWZPvG.s 			page 1
+
+
+   1              		.cpu cortex-m3
+   2              		.eabi_attribute 20, 1
+   3              		.eabi_attribute 21, 1
+   4              		.eabi_attribute 23, 3
+   5              		.eabi_attribute 24, 1
+   6              		.eabi_attribute 25, 1
+   7              		.eabi_attribute 26, 1
+   8              		.eabi_attribute 30, 1
+   9              		.eabi_attribute 34, 1
+  10              		.eabi_attribute 18, 4
+  11              		.file	"bldc.c"
+  12              		.text
+  13              	.Ltext0:
+  14              		.cfi_sections	.debug_frame
+  15              		.section	.text.DMA1_Channel1_IRQHandler,"ax",%progbits
+  16              		.align	1
+  17              		.global	DMA1_Channel1_IRQHandler
+  18              		.arch armv7-m
+  19              		.syntax unified
+  20              		.thumb
+  21              		.thumb_func
+  22              		.fpu softvfp
+  24              	DMA1_Channel1_IRQHandler:
+  25              	.LFB66:
+  26              		.file 1 "Src/bldc.c"
+   1:Src/bldc.c    **** /*
+   2:Src/bldc.c    **** * This file implements FOC motor control.
+   3:Src/bldc.c    **** * This control method offers superior performanace
+   4:Src/bldc.c    **** * compared to previous cummutation method. The new method features:
+   5:Src/bldc.c    **** * ► reduced noise and vibrations
+   6:Src/bldc.c    **** * ► smooth torque output
+   7:Src/bldc.c    **** * ► improved motor efficiency -> lower energy consumption
+   8:Src/bldc.c    **** *
+   9:Src/bldc.c    **** * Copyright (C) 2019-2020 Emanuel FERU <aerdronix@gmail.com>
+  10:Src/bldc.c    **** *
+  11:Src/bldc.c    **** * This program is free software: you can redistribute it and/or modify
+  12:Src/bldc.c    **** * it under the terms of the GNU General Public License as published by
+  13:Src/bldc.c    **** * the Free Software Foundation, either version 3 of the License, or
+  14:Src/bldc.c    **** * (at your option) any later version.
+  15:Src/bldc.c    **** *
+  16:Src/bldc.c    **** * This program is distributed in the hope that it will be useful,
+  17:Src/bldc.c    **** * but WITHOUT ANY WARRANTY; without even the implied warranty of
+  18:Src/bldc.c    **** * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  19:Src/bldc.c    **** * GNU General Public License for more details.
+  20:Src/bldc.c    **** *
+  21:Src/bldc.c    **** * You should have received a copy of the GNU General Public License
+  22:Src/bldc.c    **** * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+  23:Src/bldc.c    **** */
+  24:Src/bldc.c    **** 
+  25:Src/bldc.c    **** #include "stm32f1xx_hal.h"
+  26:Src/bldc.c    **** #include "defines.h"
+  27:Src/bldc.c    **** #include "setup.h"
+  28:Src/bldc.c    **** #include "config.h"
+  29:Src/bldc.c    **** #include "util.h"
+  30:Src/bldc.c    **** 
+  31:Src/bldc.c    **** // Matlab includes and defines - from auto-code generation
+  32:Src/bldc.c    **** // ###############################################################################
+ARM GAS  /tmp/ccTWZPvG.s 			page 2
+
+
+  33:Src/bldc.c    **** #include "BLDC_controller.h"           /* Model's header file */
+  34:Src/bldc.c    **** #include "rtwtypes.h"
+  35:Src/bldc.c    **** 
+  36:Src/bldc.c    **** extern RT_MODEL *const rtM_Left;
+  37:Src/bldc.c    **** extern RT_MODEL *const rtM_Right;
+  38:Src/bldc.c    **** 
+  39:Src/bldc.c    **** extern DW   rtDW_Left;                  /* Observable states */
+  40:Src/bldc.c    **** extern ExtU rtU_Left;                   /* External inputs */
+  41:Src/bldc.c    **** extern ExtY rtY_Left;                   /* External outputs */
+  42:Src/bldc.c    **** 
+  43:Src/bldc.c    **** extern DW   rtDW_Right;                 /* Observable states */
+  44:Src/bldc.c    **** extern ExtU rtU_Right;                  /* External inputs */
+  45:Src/bldc.c    **** extern ExtY rtY_Right;                  /* External outputs */
+  46:Src/bldc.c    **** // ###############################################################################
+  47:Src/bldc.c    **** 
+  48:Src/bldc.c    **** static int16_t pwm_margin = 110;        /* This margin allows to always have a window in the PWM si
+  49:Src/bldc.c    **** 
+  50:Src/bldc.c    **** extern uint8_t ctrlModReq;
+  51:Src/bldc.c    **** static int16_t curDC_max = (I_DC_MAX * A2BIT_CONV);
+  52:Src/bldc.c    **** int16_t curL_phaA = 0, curL_phaB = 0, curL_DC = 0;
+  53:Src/bldc.c    **** int16_t curR_phaB = 0, curR_phaC = 0, curR_DC = 0;
+  54:Src/bldc.c    **** 
+  55:Src/bldc.c    **** volatile int pwml = 0;
+  56:Src/bldc.c    **** volatile int pwmr = 0;
+  57:Src/bldc.c    **** 
+  58:Src/bldc.c    **** extern volatile adc_buf_t adc_buffer;
+  59:Src/bldc.c    **** 
+  60:Src/bldc.c    **** uint8_t buzzerFreq          = 0;
+  61:Src/bldc.c    **** uint8_t buzzerPattern       = 0;
+  62:Src/bldc.c    **** uint8_t buzzerCount         = 0;
+  63:Src/bldc.c    **** static uint32_t buzzerTimer = 0;
+  64:Src/bldc.c    **** static uint8_t  buzzerPrev  = 0;
+  65:Src/bldc.c    **** static uint8_t  buzzerIdx   = 0;
+  66:Src/bldc.c    **** 
+  67:Src/bldc.c    **** uint8_t        enable       = 0;        // initially motors are disabled for SAFETY
+  68:Src/bldc.c    **** static uint8_t enableFin    = 0;
+  69:Src/bldc.c    **** 
+  70:Src/bldc.c    **** static const uint16_t pwm_res  = 64000000 / 2 / PWM_FREQ; // = 2000
+  71:Src/bldc.c    **** 
+  72:Src/bldc.c    **** static uint16_t offsetcount = 0;
+  73:Src/bldc.c    **** static int16_t offsetrlA    = 2000;
+  74:Src/bldc.c    **** static int16_t offsetrlB    = 2000;
+  75:Src/bldc.c    **** static int16_t offsetrrB    = 2000;
+  76:Src/bldc.c    **** static int16_t offsetrrC    = 2000;
+  77:Src/bldc.c    **** static int16_t offsetdcl    = 2000;
+  78:Src/bldc.c    **** static int16_t offsetdcr    = 2000;
+  79:Src/bldc.c    **** 
+  80:Src/bldc.c    **** int16_t        batVoltage       = (400 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE;
+  81:Src/bldc.c    **** static int32_t batVoltageFixdt  = (400 * BAT_CELLS * BAT_CALIB_ADC) / BAT_CALIB_REAL_VOLTAGE << 16;
+  82:Src/bldc.c    **** 
+  83:Src/bldc.c    **** // =================================
+  84:Src/bldc.c    **** // DMA interrupt frequency =~ 16 kHz
+  85:Src/bldc.c    **** // =================================
+  86:Src/bldc.c    **** void DMA1_Channel1_IRQHandler(void) {
+  27              		.loc 1 86 37 view -0
+  28              		.cfi_startproc
+  29              		@ args = 0, pretend = 0, frame = 0
+ARM GAS  /tmp/ccTWZPvG.s 			page 3
+
+
+  30              		@ frame_needed = 0, uses_anonymous_args = 0
+  87:Src/bldc.c    **** 
+  88:Src/bldc.c    ****   DMA1->IFCR = DMA_IFCR_CTCIF1;
+  31              		.loc 1 88 3 view .LVU1
+  32              		.loc 1 88 14 is_stmt 0 view .LVU2
+  33 0000 904B     		ldr	r3, .L43
+  34 0002 0222     		movs	r2, #2
+  35 0004 5A60     		str	r2, [r3, #4]
+  89:Src/bldc.c    ****   // HAL_GPIO_WritePin(LED_PORT, LED_PIN, 1);
+  90:Src/bldc.c    ****   // HAL_GPIO_TogglePin(LED_PORT, LED_PIN);
+  91:Src/bldc.c    **** 
+  92:Src/bldc.c    ****   if(offsetcount < 2000) {  // calibrate ADC offsets
+  36              		.loc 1 92 3 is_stmt 1 view .LVU3
+  37              		.loc 1 92 18 is_stmt 0 view .LVU4
+  38 0006 904B     		ldr	r3, .L43+4
+  39 0008 1B88     		ldrh	r3, [r3]
+  40              		.loc 1 92 5 view .LVU5
+  41 000a B3F5FA6F 		cmp	r3, #2000
+  42 000e C0F09A80 		bcc	.L40
+  86:Src/bldc.c    **** 
+  43              		.loc 1 86 37 view .LVU6
+  44 0012 10B5     		push	{r4, lr}
+  45              	.LCFI0:
+  46              		.cfi_def_cfa_offset 8
+  47              		.cfi_offset 4, -8
+  48              		.cfi_offset 14, -4
+  93:Src/bldc.c    ****     offsetcount++;
+  94:Src/bldc.c    ****     offsetrlA = (adc_buffer.rlA + offsetrlA) / 2;
+  95:Src/bldc.c    ****     offsetrlB = (adc_buffer.rlB + offsetrlB) / 2;
+  96:Src/bldc.c    ****     offsetrrB = (adc_buffer.rrB + offsetrrB) / 2;
+  97:Src/bldc.c    ****     offsetrrC = (adc_buffer.rrC + offsetrrC) / 2;
+  98:Src/bldc.c    ****     offsetdcl = (adc_buffer.dcl + offsetdcl) / 2;
+  99:Src/bldc.c    ****     offsetdcr = (adc_buffer.dcr + offsetdcr) / 2;
+ 100:Src/bldc.c    ****     return;
+ 101:Src/bldc.c    ****   }
+ 102:Src/bldc.c    **** 
+ 103:Src/bldc.c    ****   if (buzzerTimer % 1000 == 0) {  // Filter battery voltage at a slower sampling rate
+  49              		.loc 1 103 3 is_stmt 1 view .LVU7
+  50              		.loc 1 103 19 is_stmt 0 view .LVU8
+  51 0014 8D4B     		ldr	r3, .L43+8
+  52 0016 1A68     		ldr	r2, [r3]
+  53 0018 8D4B     		ldr	r3, .L43+12
+  54 001a A3FB0213 		umull	r1, r3, r3, r2
+  55 001e 9B09     		lsrs	r3, r3, #6
+  56 0020 4FF47A71 		mov	r1, #1000
+  57 0024 01FB1323 		mls	r3, r1, r3, r2
+  58              		.loc 1 103 6 view .LVU9
+  59 0028 002B     		cmp	r3, #0
+  60 002a 00F0CD80 		beq	.L41
+  61              	.L4:
+ 104:Src/bldc.c    ****     filtLowPass32(adc_buffer.batt1, BAT_FILT_COEF, &batVoltageFixdt);
+ 105:Src/bldc.c    ****     batVoltage = (int16_t)(batVoltageFixdt >> 16);  // convert fixed-point to integer
+ 106:Src/bldc.c    ****   }
+ 107:Src/bldc.c    **** 
+ 108:Src/bldc.c    ****   // Get Left motor currents
+ 109:Src/bldc.c    ****   curL_phaA = (int16_t)(offsetrlA - adc_buffer.rlA);
+  62              		.loc 1 109 3 is_stmt 1 view .LVU10
+ARM GAS  /tmp/ccTWZPvG.s 			page 4
+
+
+  63              		.loc 1 109 47 is_stmt 0 view .LVU11
+  64 002e 894B     		ldr	r3, .L43+16
+  65 0030 9A88     		ldrh	r2, [r3, #4]
+  66 0032 91B2     		uxth	r1, r2
+  67              		.loc 1 109 35 view .LVU12
+  68 0034 884A     		ldr	r2, .L43+20
+  69 0036 1288     		ldrh	r2, [r2]
+  70 0038 521A     		subs	r2, r2, r1
+  71              		.loc 1 109 13 view .LVU13
+  72 003a 8849     		ldr	r1, .L43+24
+  73 003c 0A80     		strh	r2, [r1]	@ movhi
+ 110:Src/bldc.c    ****   curL_phaB = (int16_t)(offsetrlB - adc_buffer.rlB);
+  74              		.loc 1 110 3 is_stmt 1 view .LVU14
+  75              		.loc 1 110 47 is_stmt 0 view .LVU15
+  76 003e DA88     		ldrh	r2, [r3, #6]
+  77 0040 91B2     		uxth	r1, r2
+  78              		.loc 1 110 35 view .LVU16
+  79 0042 874A     		ldr	r2, .L43+28
+  80 0044 1288     		ldrh	r2, [r2]
+  81 0046 521A     		subs	r2, r2, r1
+  82              		.loc 1 110 13 view .LVU17
+  83 0048 8649     		ldr	r1, .L43+32
+  84 004a 0A80     		strh	r2, [r1]	@ movhi
+ 111:Src/bldc.c    ****   curL_DC   = (int16_t)(offsetdcl - adc_buffer.dcl);
+  85              		.loc 1 111 3 is_stmt 1 view .LVU18
+  86              		.loc 1 111 47 is_stmt 0 view .LVU19
+  87 004c 5A88     		ldrh	r2, [r3, #2]
+  88 004e 91B2     		uxth	r1, r2
+  89              		.loc 1 111 35 view .LVU20
+  90 0050 854A     		ldr	r2, .L43+36
+  91 0052 1288     		ldrh	r2, [r2]
+  92 0054 521A     		subs	r2, r2, r1
+  93              		.loc 1 111 15 view .LVU21
+  94 0056 12B2     		sxth	r2, r2
+  95              		.loc 1 111 13 view .LVU22
+  96 0058 8449     		ldr	r1, .L43+40
+  97 005a 0A80     		strh	r2, [r1]	@ movhi
+ 112:Src/bldc.c    ****   
+ 113:Src/bldc.c    ****   // Get Right motor currents
+ 114:Src/bldc.c    ****   curR_phaB = (int16_t)(offsetrrB - adc_buffer.rrB);
+  98              		.loc 1 114 3 is_stmt 1 view .LVU23
+  99              		.loc 1 114 47 is_stmt 0 view .LVU24
+ 100 005c 1989     		ldrh	r1, [r3, #8]
+ 101 005e 88B2     		uxth	r0, r1
+ 102              		.loc 1 114 35 view .LVU25
+ 103 0060 8349     		ldr	r1, .L43+44
+ 104 0062 0988     		ldrh	r1, [r1]
+ 105 0064 091A     		subs	r1, r1, r0
+ 106              		.loc 1 114 13 view .LVU26
+ 107 0066 8348     		ldr	r0, .L43+48
+ 108 0068 0180     		strh	r1, [r0]	@ movhi
+ 115:Src/bldc.c    ****   curR_phaC = (int16_t)(offsetrrC - adc_buffer.rrC);
+ 109              		.loc 1 115 3 is_stmt 1 view .LVU27
+ 110              		.loc 1 115 47 is_stmt 0 view .LVU28
+ 111 006a 5989     		ldrh	r1, [r3, #10]
+ 112 006c 88B2     		uxth	r0, r1
+ 113              		.loc 1 115 35 view .LVU29
+ARM GAS  /tmp/ccTWZPvG.s 			page 5
+
+
+ 114 006e 8249     		ldr	r1, .L43+52
+ 115 0070 0988     		ldrh	r1, [r1]
+ 116 0072 091A     		subs	r1, r1, r0
+ 117              		.loc 1 115 13 view .LVU30
+ 118 0074 8148     		ldr	r0, .L43+56
+ 119 0076 0180     		strh	r1, [r0]	@ movhi
+ 116:Src/bldc.c    ****   curR_DC   = (int16_t)(offsetdcr - adc_buffer.dcr);
+ 120              		.loc 1 116 3 is_stmt 1 view .LVU31
+ 121              		.loc 1 116 47 is_stmt 0 view .LVU32
+ 122 0078 1B88     		ldrh	r3, [r3]
+ 123 007a 99B2     		uxth	r1, r3
+ 124              		.loc 1 116 35 view .LVU33
+ 125 007c 804B     		ldr	r3, .L43+60
+ 126 007e 1B88     		ldrh	r3, [r3]
+ 127 0080 5B1A     		subs	r3, r3, r1
+ 128              		.loc 1 116 15 view .LVU34
+ 129 0082 1BB2     		sxth	r3, r3
+ 130              		.loc 1 116 13 view .LVU35
+ 131 0084 7F49     		ldr	r1, .L43+64
+ 132 0086 0B80     		strh	r3, [r1]	@ movhi
+ 117:Src/bldc.c    **** 
+ 118:Src/bldc.c    ****   // Disable PWM when current limit is reached (current chopping)
+ 119:Src/bldc.c    ****   // This is the Level 2 of current protection. The Level 1 should kick in first given by I_MOT_MAX
+ 120:Src/bldc.c    ****   if(ABS(curL_DC) > curDC_max || enable == 0) {
+ 133              		.loc 1 120 3 is_stmt 1 view .LVU36
+ 134              		.loc 1 120 6 is_stmt 0 view .LVU37
+ 135 0088 002A     		cmp	r2, #0
+ 136 008a B8BF     		it	lt
+ 137 008c 5242     		rsblt	r2, r2, #0
+ 138 008e 92B2     		uxth	r2, r2
+ 139              		.loc 1 120 5 view .LVU38
+ 140 0090 B2F5C86F 		cmp	r2, #1600
+ 141 0094 04D8     		bhi	.L5
+ 142              		.loc 1 120 41 discriminator 1 view .LVU39
+ 143 0096 7C4A     		ldr	r2, .L43+68
+ 144 0098 1278     		ldrb	r2, [r2]	@ zero_extendqisi2
+ 145              		.loc 1 120 31 discriminator 1 view .LVU40
+ 146 009a 002A     		cmp	r2, #0
+ 147 009c 40F0A280 		bne	.L6
+ 148              	.L5:
+ 121:Src/bldc.c    ****     LEFT_TIM->BDTR &= ~TIM_BDTR_MOE;
+ 149              		.loc 1 121 5 is_stmt 1 view .LVU41
+ 150              		.loc 1 121 20 is_stmt 0 view .LVU42
+ 151 00a0 7A49     		ldr	r1, .L43+72
+ 152 00a2 4A6C     		ldr	r2, [r1, #68]
+ 153 00a4 22F40042 		bic	r2, r2, #32768
+ 154 00a8 4A64     		str	r2, [r1, #68]
+ 155              	.L7:
+ 122:Src/bldc.c    ****   } else {
+ 123:Src/bldc.c    ****     LEFT_TIM->BDTR |= TIM_BDTR_MOE;
+ 124:Src/bldc.c    ****   }
+ 125:Src/bldc.c    **** 
+ 126:Src/bldc.c    ****   if(ABS(curR_DC)  > curDC_max || enable == 0) {
+ 156              		.loc 1 126 3 is_stmt 1 view .LVU43
+ 157              		.loc 1 126 6 is_stmt 0 view .LVU44
+ 158 00aa 002B     		cmp	r3, #0
+ 159 00ac B8BF     		it	lt
+ARM GAS  /tmp/ccTWZPvG.s 			page 6
+
+
+ 160 00ae 5B42     		rsblt	r3, r3, #0
+ 161 00b0 9BB2     		uxth	r3, r3
+ 162              		.loc 1 126 5 view .LVU45
+ 163 00b2 B3F5C86F 		cmp	r3, #1600
+ 164 00b6 04D8     		bhi	.L8
+ 165              		.loc 1 126 42 discriminator 1 view .LVU46
+ 166 00b8 734B     		ldr	r3, .L43+68
+ 167 00ba 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 168              		.loc 1 126 32 discriminator 1 view .LVU47
+ 169 00bc 002B     		cmp	r3, #0
+ 170 00be 40F09780 		bne	.L9
+ 171              	.L8:
+ 127:Src/bldc.c    ****     RIGHT_TIM->BDTR &= ~TIM_BDTR_MOE;
+ 172              		.loc 1 127 5 is_stmt 1 view .LVU48
+ 173              		.loc 1 127 21 is_stmt 0 view .LVU49
+ 174 00c2 734A     		ldr	r2, .L43+76
+ 175 00c4 536C     		ldr	r3, [r2, #68]
+ 176 00c6 23F40043 		bic	r3, r3, #32768
+ 177 00ca 5364     		str	r3, [r2, #68]
+ 178              	.L10:
+ 128:Src/bldc.c    ****   } else {
+ 129:Src/bldc.c    ****     RIGHT_TIM->BDTR |= TIM_BDTR_MOE;
+ 130:Src/bldc.c    ****   }
+ 131:Src/bldc.c    **** 
+ 132:Src/bldc.c    ****   // Create square wave for buzzer
+ 133:Src/bldc.c    ****   buzzerTimer++;
+ 179              		.loc 1 133 3 is_stmt 1 view .LVU50
+ 180              		.loc 1 133 14 is_stmt 0 view .LVU51
+ 181 00cc 5F4A     		ldr	r2, .L43+8
+ 182 00ce 1368     		ldr	r3, [r2]
+ 183 00d0 0133     		adds	r3, r3, #1
+ 184 00d2 1360     		str	r3, [r2]
+ 134:Src/bldc.c    ****   if (buzzerFreq != 0 && (buzzerTimer / 5000) % (buzzerPattern + 1) == 0) {
+ 185              		.loc 1 134 3 is_stmt 1 view .LVU52
+ 186              		.loc 1 134 18 is_stmt 0 view .LVU53
+ 187 00d4 6F4A     		ldr	r2, .L43+80
+ 188 00d6 1178     		ldrb	r1, [r2]	@ zero_extendqisi2
+ 189              		.loc 1 134 6 view .LVU54
+ 190 00d8 0029     		cmp	r1, #0
+ 191 00da 00F08F80 		beq	.L11
+ 192              		.loc 1 134 39 discriminator 1 view .LVU55
+ 193 00de 6E4A     		ldr	r2, .L43+84
+ 194 00e0 A2FB0302 		umull	r0, r2, r2, r3
+ 195 00e4 120B     		lsrs	r2, r2, #12
+ 196              		.loc 1 134 64 discriminator 1 view .LVU56
+ 197 00e6 6D48     		ldr	r0, .L43+88
+ 198 00e8 0078     		ldrb	r0, [r0]	@ zero_extendqisi2
+ 199 00ea 0130     		adds	r0, r0, #1
+ 200              		.loc 1 134 47 discriminator 1 view .LVU57
+ 201 00ec B2FBF0F4 		udiv	r4, r2, r0
+ 202 00f0 00FB1422 		mls	r2, r0, r4, r2
+ 203              		.loc 1 134 23 discriminator 1 view .LVU58
+ 204 00f4 002A     		cmp	r2, #0
+ 205 00f6 40F08180 		bne	.L11
+ 135:Src/bldc.c    ****     if (buzzerPrev == 0) {
+ 206              		.loc 1 135 5 is_stmt 1 view .LVU59
+ 207              		.loc 1 135 20 is_stmt 0 view .LVU60
+ARM GAS  /tmp/ccTWZPvG.s 			page 7
+
+
+ 208 00fa 694A     		ldr	r2, .L43+92
+ 209 00fc 1278     		ldrb	r2, [r2]	@ zero_extendqisi2
+ 210              		.loc 1 135 8 view .LVU61
+ 211 00fe 7AB9     		cbnz	r2, .L12
+ 136:Src/bldc.c    ****       buzzerPrev = 1;
+ 212              		.loc 1 136 7 is_stmt 1 view .LVU62
+ 213              		.loc 1 136 18 is_stmt 0 view .LVU63
+ 214 0100 674A     		ldr	r2, .L43+92
+ 215 0102 0120     		movs	r0, #1
+ 216 0104 1070     		strb	r0, [r2]
+ 137:Src/bldc.c    ****       if (++buzzerIdx > (buzzerCount + 2)) {    // pause 2 periods
+ 217              		.loc 1 137 7 is_stmt 1 view .LVU64
+ 218              		.loc 1 137 11 is_stmt 0 view .LVU65
+ 219 0106 6748     		ldr	r0, .L43+96
+ 220 0108 0278     		ldrb	r2, [r0]	@ zero_extendqisi2
+ 221 010a 0132     		adds	r2, r2, #1
+ 222 010c D2B2     		uxtb	r2, r2
+ 223              		.loc 1 137 10 view .LVU66
+ 224 010e 0270     		strb	r2, [r0]
+ 225              		.loc 1 137 38 view .LVU67
+ 226 0110 6548     		ldr	r0, .L43+100
+ 227 0112 0078     		ldrb	r0, [r0]	@ zero_extendqisi2
+ 228 0114 0230     		adds	r0, r0, #2
+ 229              		.loc 1 137 10 view .LVU68
+ 230 0116 8242     		cmp	r2, r0
+ 231 0118 02DD     		ble	.L12
+ 138:Src/bldc.c    ****         buzzerIdx = 1;
+ 232              		.loc 1 138 9 is_stmt 1 view .LVU69
+ 233              		.loc 1 138 19 is_stmt 0 view .LVU70
+ 234 011a 624A     		ldr	r2, .L43+96
+ 235 011c 0120     		movs	r0, #1
+ 236 011e 1070     		strb	r0, [r2]
+ 237              	.L12:
+ 139:Src/bldc.c    ****       }
+ 140:Src/bldc.c    ****     }
+ 141:Src/bldc.c    ****     if (buzzerTimer % buzzerFreq == 0 && (buzzerIdx <= buzzerCount || buzzerCount == 0)) {
+ 238              		.loc 1 141 5 is_stmt 1 view .LVU71
+ 239              		.loc 1 141 21 is_stmt 0 view .LVU72
+ 240 0120 B3FBF1F2 		udiv	r2, r3, r1
+ 241 0124 01FB1233 		mls	r3, r1, r2, r3
+ 242              		.loc 1 141 8 view .LVU73
+ 243 0128 002B     		cmp	r3, #0
+ 244 012a 6AD1     		bne	.L13
+ 245              		.loc 1 141 53 discriminator 1 view .LVU74
+ 246 012c 5D4B     		ldr	r3, .L43+96
+ 247 012e 1A78     		ldrb	r2, [r3]	@ zero_extendqisi2
+ 248 0130 5D4B     		ldr	r3, .L43+100
+ 249 0132 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 250              		.loc 1 141 39 discriminator 1 view .LVU75
+ 251 0134 9A42     		cmp	r2, r3
+ 252 0136 01D9     		bls	.L14
+ 253              		.loc 1 141 68 discriminator 2 view .LVU76
+ 254 0138 002B     		cmp	r3, #0
+ 255 013a 62D1     		bne	.L13
+ 256              	.L14:
+ 142:Src/bldc.c    ****       HAL_GPIO_TogglePin(BUZZER_PORT, BUZZER_PIN);
+ 257              		.loc 1 142 7 is_stmt 1 view .LVU77
+ARM GAS  /tmp/ccTWZPvG.s 			page 8
+
+
+ 258 013c 1021     		movs	r1, #16
+ 259 013e 5B48     		ldr	r0, .L43+104
+ 260 0140 FFF7FEFF 		bl	HAL_GPIO_TogglePin
+ 261              	.LVL0:
+ 262 0144 5DE0     		b	.L13
+ 263              	.L40:
+ 264              	.LCFI1:
+ 265              		.cfi_def_cfa_offset 0
+ 266              		.cfi_restore 4
+ 267              		.cfi_restore 14
+  93:Src/bldc.c    ****     offsetrlA = (adc_buffer.rlA + offsetrlA) / 2;
+ 268              		.loc 1 93 5 view .LVU78
+  93:Src/bldc.c    ****     offsetrlA = (adc_buffer.rlA + offsetrlA) / 2;
+ 269              		.loc 1 93 16 is_stmt 0 view .LVU79
+ 270 0146 0133     		adds	r3, r3, #1
+ 271 0148 3F4A     		ldr	r2, .L43+4
+ 272 014a 1380     		strh	r3, [r2]	@ movhi
+  94:Src/bldc.c    ****     offsetrlB = (adc_buffer.rlB + offsetrlB) / 2;
+ 273              		.loc 1 94 5 is_stmt 1 view .LVU80
+  94:Src/bldc.c    ****     offsetrlB = (adc_buffer.rlB + offsetrlB) / 2;
+ 274              		.loc 1 94 28 is_stmt 0 view .LVU81
+ 275 014c 414A     		ldr	r2, .L43+16
+ 276 014e 9388     		ldrh	r3, [r2, #4]
+ 277 0150 99B2     		uxth	r1, r3
+  94:Src/bldc.c    ****     offsetrlB = (adc_buffer.rlB + offsetrlB) / 2;
+ 278              		.loc 1 94 33 view .LVU82
+ 279 0152 4148     		ldr	r0, .L43+20
+ 280 0154 B0F90030 		ldrsh	r3, [r0]
+ 281 0158 0B44     		add	r3, r3, r1
+  94:Src/bldc.c    ****     offsetrlB = (adc_buffer.rlB + offsetrlB) / 2;
+ 282              		.loc 1 94 46 view .LVU83
+ 283 015a 03EBD373 		add	r3, r3, r3, lsr #31
+ 284 015e 5B10     		asrs	r3, r3, #1
+  94:Src/bldc.c    ****     offsetrlB = (adc_buffer.rlB + offsetrlB) / 2;
+ 285              		.loc 1 94 15 view .LVU84
+ 286 0160 0380     		strh	r3, [r0]	@ movhi
+  95:Src/bldc.c    ****     offsetrrB = (adc_buffer.rrB + offsetrrB) / 2;
+ 287              		.loc 1 95 5 is_stmt 1 view .LVU85
+  95:Src/bldc.c    ****     offsetrrB = (adc_buffer.rrB + offsetrrB) / 2;
+ 288              		.loc 1 95 28 is_stmt 0 view .LVU86
+ 289 0162 D388     		ldrh	r3, [r2, #6]
+ 290 0164 99B2     		uxth	r1, r3
+  95:Src/bldc.c    ****     offsetrrB = (adc_buffer.rrB + offsetrrB) / 2;
+ 291              		.loc 1 95 33 view .LVU87
+ 292 0166 3E48     		ldr	r0, .L43+28
+ 293 0168 B0F90030 		ldrsh	r3, [r0]
+ 294 016c 0B44     		add	r3, r3, r1
+  95:Src/bldc.c    ****     offsetrrB = (adc_buffer.rrB + offsetrrB) / 2;
+ 295              		.loc 1 95 46 view .LVU88
+ 296 016e 03EBD373 		add	r3, r3, r3, lsr #31
+ 297 0172 5B10     		asrs	r3, r3, #1
+  95:Src/bldc.c    ****     offsetrrB = (adc_buffer.rrB + offsetrrB) / 2;
+ 298              		.loc 1 95 15 view .LVU89
+ 299 0174 0380     		strh	r3, [r0]	@ movhi
+  96:Src/bldc.c    ****     offsetrrC = (adc_buffer.rrC + offsetrrC) / 2;
+ 300              		.loc 1 96 5 is_stmt 1 view .LVU90
+  96:Src/bldc.c    ****     offsetrrC = (adc_buffer.rrC + offsetrrC) / 2;
+ARM GAS  /tmp/ccTWZPvG.s 			page 9
+
+
+ 301              		.loc 1 96 28 is_stmt 0 view .LVU91
+ 302 0176 1389     		ldrh	r3, [r2, #8]
+ 303 0178 99B2     		uxth	r1, r3
+  96:Src/bldc.c    ****     offsetrrC = (adc_buffer.rrC + offsetrrC) / 2;
+ 304              		.loc 1 96 33 view .LVU92
+ 305 017a 3D48     		ldr	r0, .L43+44
+ 306 017c B0F90030 		ldrsh	r3, [r0]
+ 307 0180 0B44     		add	r3, r3, r1
+  96:Src/bldc.c    ****     offsetrrC = (adc_buffer.rrC + offsetrrC) / 2;
+ 308              		.loc 1 96 46 view .LVU93
+ 309 0182 03EBD373 		add	r3, r3, r3, lsr #31
+ 310 0186 5B10     		asrs	r3, r3, #1
+  96:Src/bldc.c    ****     offsetrrC = (adc_buffer.rrC + offsetrrC) / 2;
+ 311              		.loc 1 96 15 view .LVU94
+ 312 0188 0380     		strh	r3, [r0]	@ movhi
+  97:Src/bldc.c    ****     offsetdcl = (adc_buffer.dcl + offsetdcl) / 2;
+ 313              		.loc 1 97 5 is_stmt 1 view .LVU95
+  97:Src/bldc.c    ****     offsetdcl = (adc_buffer.dcl + offsetdcl) / 2;
+ 314              		.loc 1 97 28 is_stmt 0 view .LVU96
+ 315 018a 5389     		ldrh	r3, [r2, #10]
+ 316 018c 99B2     		uxth	r1, r3
+  97:Src/bldc.c    ****     offsetdcl = (adc_buffer.dcl + offsetdcl) / 2;
+ 317              		.loc 1 97 33 view .LVU97
+ 318 018e 3A48     		ldr	r0, .L43+52
+ 319 0190 B0F90030 		ldrsh	r3, [r0]
+ 320 0194 0B44     		add	r3, r3, r1
+  97:Src/bldc.c    ****     offsetdcl = (adc_buffer.dcl + offsetdcl) / 2;
+ 321              		.loc 1 97 46 view .LVU98
+ 322 0196 03EBD373 		add	r3, r3, r3, lsr #31
+ 323 019a 5B10     		asrs	r3, r3, #1
+  97:Src/bldc.c    ****     offsetdcl = (adc_buffer.dcl + offsetdcl) / 2;
+ 324              		.loc 1 97 15 view .LVU99
+ 325 019c 0380     		strh	r3, [r0]	@ movhi
+  98:Src/bldc.c    ****     offsetdcr = (adc_buffer.dcr + offsetdcr) / 2;
+ 326              		.loc 1 98 5 is_stmt 1 view .LVU100
+  98:Src/bldc.c    ****     offsetdcr = (adc_buffer.dcr + offsetdcr) / 2;
+ 327              		.loc 1 98 28 is_stmt 0 view .LVU101
+ 328 019e 5388     		ldrh	r3, [r2, #2]
+ 329 01a0 99B2     		uxth	r1, r3
+  98:Src/bldc.c    ****     offsetdcr = (adc_buffer.dcr + offsetdcr) / 2;
+ 330              		.loc 1 98 33 view .LVU102
+ 331 01a2 3148     		ldr	r0, .L43+36
+ 332 01a4 B0F90030 		ldrsh	r3, [r0]
+ 333 01a8 0B44     		add	r3, r3, r1
+  98:Src/bldc.c    ****     offsetdcr = (adc_buffer.dcr + offsetdcr) / 2;
+ 334              		.loc 1 98 46 view .LVU103
+ 335 01aa 03EBD373 		add	r3, r3, r3, lsr #31
+ 336 01ae 5B10     		asrs	r3, r3, #1
+  98:Src/bldc.c    ****     offsetdcr = (adc_buffer.dcr + offsetdcr) / 2;
+ 337              		.loc 1 98 15 view .LVU104
+ 338 01b0 0380     		strh	r3, [r0]	@ movhi
+  99:Src/bldc.c    ****     return;
+ 339              		.loc 1 99 5 is_stmt 1 view .LVU105
+  99:Src/bldc.c    ****     return;
+ 340              		.loc 1 99 28 is_stmt 0 view .LVU106
+ 341 01b2 1388     		ldrh	r3, [r2]
+ 342 01b4 9AB2     		uxth	r2, r3
+ARM GAS  /tmp/ccTWZPvG.s 			page 10
+
+
+  99:Src/bldc.c    ****     return;
+ 343              		.loc 1 99 33 view .LVU107
+ 344 01b6 3249     		ldr	r1, .L43+60
+ 345 01b8 B1F90030 		ldrsh	r3, [r1]
+ 346 01bc 1344     		add	r3, r3, r2
+  99:Src/bldc.c    ****     return;
+ 347              		.loc 1 99 46 view .LVU108
+ 348 01be 03EBD373 		add	r3, r3, r3, lsr #31
+ 349 01c2 5B10     		asrs	r3, r3, #1
+  99:Src/bldc.c    ****     return;
+ 350              		.loc 1 99 15 view .LVU109
+ 351 01c4 0B80     		strh	r3, [r1]	@ movhi
+ 100:Src/bldc.c    ****   }
+ 352              		.loc 1 100 5 is_stmt 1 view .LVU110
+ 353 01c6 7047     		bx	lr
+ 354              	.L41:
+ 355              	.LCFI2:
+ 356              		.cfi_def_cfa_offset 8
+ 357              		.cfi_offset 4, -8
+ 358              		.cfi_offset 14, -4
+ 104:Src/bldc.c    ****     batVoltage = (int16_t)(batVoltageFixdt >> 16);  // convert fixed-point to integer
+ 359              		.loc 1 104 5 view .LVU111
+ 104:Src/bldc.c    ****     batVoltage = (int16_t)(batVoltageFixdt >> 16);  // convert fixed-point to integer
+ 360              		.loc 1 104 29 is_stmt 0 view .LVU112
+ 361 01c8 224B     		ldr	r3, .L43+16
+ 362 01ca 9889     		ldrh	r0, [r3, #12]
+ 104:Src/bldc.c    ****     batVoltage = (int16_t)(batVoltageFixdt >> 16);  // convert fixed-point to integer
+ 363              		.loc 1 104 5 view .LVU113
+ 364 01cc 384C     		ldr	r4, .L43+108
+ 365 01ce 2246     		mov	r2, r4
+ 366 01d0 40F28F21 		movw	r1, #655
+ 367 01d4 80B2     		uxth	r0, r0
+ 368 01d6 FFF7FEFF 		bl	filtLowPass32
+ 369              	.LVL1:
+ 105:Src/bldc.c    ****   }
+ 370              		.loc 1 105 5 is_stmt 1 view .LVU114
+ 105:Src/bldc.c    ****   }
+ 371              		.loc 1 105 18 is_stmt 0 view .LVU115
+ 372 01da B4F90220 		ldrsh	r2, [r4, #2]
+ 105:Src/bldc.c    ****   }
+ 373              		.loc 1 105 16 view .LVU116
+ 374 01de 354B     		ldr	r3, .L43+112
+ 375 01e0 1A80     		strh	r2, [r3]	@ movhi
+ 376 01e2 24E7     		b	.L4
+ 377              	.L6:
+ 123:Src/bldc.c    ****   }
+ 378              		.loc 1 123 5 is_stmt 1 view .LVU117
+ 123:Src/bldc.c    ****   }
+ 379              		.loc 1 123 20 is_stmt 0 view .LVU118
+ 380 01e4 2949     		ldr	r1, .L43+72
+ 381 01e6 4A6C     		ldr	r2, [r1, #68]
+ 382 01e8 42F40042 		orr	r2, r2, #32768
+ 383 01ec 4A64     		str	r2, [r1, #68]
+ 384 01ee 5CE7     		b	.L7
+ 385              	.L9:
+ 129:Src/bldc.c    ****   }
+ 386              		.loc 1 129 5 is_stmt 1 view .LVU119
+ARM GAS  /tmp/ccTWZPvG.s 			page 11
+
+
+ 129:Src/bldc.c    ****   }
+ 387              		.loc 1 129 21 is_stmt 0 view .LVU120
+ 388 01f0 274A     		ldr	r2, .L43+76
+ 389 01f2 536C     		ldr	r3, [r2, #68]
+ 390 01f4 43F40043 		orr	r3, r3, #32768
+ 391 01f8 5364     		str	r3, [r2, #68]
+ 392 01fa 67E7     		b	.L10
+ 393              	.L11:
+ 143:Src/bldc.c    ****     }
+ 144:Src/bldc.c    ****   } else if (buzzerPrev) {
+ 394              		.loc 1 144 10 is_stmt 1 view .LVU121
+ 395              		.loc 1 144 14 is_stmt 0 view .LVU122
+ 396 01fc 284B     		ldr	r3, .L43+92
+ 397 01fe 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 398              		.loc 1 144 13 view .LVU123
+ 399 0200 BBB9     		cbnz	r3, .L42
+ 400              	.L13:
+ 145:Src/bldc.c    ****       HAL_GPIO_WritePin(BUZZER_PORT, BUZZER_PIN, GPIO_PIN_RESET);
+ 146:Src/bldc.c    ****       buzzerPrev = 0;
+ 147:Src/bldc.c    ****   }
+ 148:Src/bldc.c    **** 
+ 149:Src/bldc.c    ****   // ############################### MOTOR CONTROL ###############################
+ 150:Src/bldc.c    **** 
+ 151:Src/bldc.c    ****   int ul, vl, wl;
+ 401              		.loc 1 151 3 is_stmt 1 view .LVU124
+ 152:Src/bldc.c    ****   int ur, vr, wr;
+ 402              		.loc 1 152 3 view .LVU125
+ 153:Src/bldc.c    ****   static boolean_T OverrunFlag = false;
+ 403              		.loc 1 153 3 view .LVU126
+ 154:Src/bldc.c    **** 
+ 155:Src/bldc.c    ****   /* Check for overrun */
+ 156:Src/bldc.c    ****   if (OverrunFlag) {
+ 404              		.loc 1 156 3 view .LVU127
+ 405              		.loc 1 156 7 is_stmt 0 view .LVU128
+ 406 0202 2D4B     		ldr	r3, .L43+116
+ 407 0204 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 408              		.loc 1 156 6 view .LVU129
+ 409 0206 002B     		cmp	r3, #0
+ 410 0208 40F03781 		bne	.L1
+ 157:Src/bldc.c    ****     return;
+ 158:Src/bldc.c    ****   }
+ 159:Src/bldc.c    ****   OverrunFlag = true;
+ 411              		.loc 1 159 3 is_stmt 1 view .LVU130
+ 412              		.loc 1 159 15 is_stmt 0 view .LVU131
+ 413 020c 2A4B     		ldr	r3, .L43+116
+ 414 020e 0122     		movs	r2, #1
+ 415 0210 1A70     		strb	r2, [r3]
+ 160:Src/bldc.c    **** 
+ 161:Src/bldc.c    ****   /* Make sure to stop BOTH motors in case of an error */
+ 162:Src/bldc.c    ****   enableFin = enable && !rtY_Left.z_errCode && !rtY_Right.z_errCode;
+ 416              		.loc 1 162 3 is_stmt 1 view .LVU132
+ 417              		.loc 1 162 15 is_stmt 0 view .LVU133
+ 418 0212 1D4B     		ldr	r3, .L43+68
+ 419 0214 1B78     		ldrb	r3, [r3]	@ zero_extendqisi2
+ 420              		.loc 1 162 45 view .LVU134
+ 421 0216 002B     		cmp	r3, #0
+ 422 0218 54D0     		beq	.L22
+ARM GAS  /tmp/ccTWZPvG.s 			page 12
+
+
+ 423              		.loc 1 162 34 discriminator 1 view .LVU135
+ 424 021a 284B     		ldr	r3, .L43+120
+ 425 021c 9B79     		ldrb	r3, [r3, #6]	@ zero_extendqisi2
+ 426              		.loc 1 162 22 discriminator 1 view .LVU136
+ 427 021e 002B     		cmp	r3, #0
+ 428 0220 40F09280 		bne	.L23
+ 429              		.loc 1 162 58 discriminator 3 view .LVU137
+ 430 0224 264B     		ldr	r3, .L43+124
+ 431 0226 9B79     		ldrb	r3, [r3, #6]	@ zero_extendqisi2
+ 432              		.loc 1 162 45 discriminator 3 view .LVU138
+ 433 0228 002B     		cmp	r3, #0
+ 434 022a 00F08F80 		beq	.L24
+ 435              		.loc 1 162 45 view .LVU139
+ 436 022e 0022     		movs	r2, #0
+ 437 0230 49E0     		b	.L15
+ 438              	.L42:
+ 145:Src/bldc.c    ****       buzzerPrev = 0;
+ 439              		.loc 1 145 7 is_stmt 1 view .LVU140
+ 440 0232 0022     		movs	r2, #0
+ 441 0234 1021     		movs	r1, #16
+ 442 0236 1D48     		ldr	r0, .L43+104
+ 443 0238 FFF7FEFF 		bl	HAL_GPIO_WritePin
+ 444              	.LVL2:
+ 146:Src/bldc.c    ****   }
+ 445              		.loc 1 146 7 view .LVU141
+ 146:Src/bldc.c    ****   }
+ 446              		.loc 1 146 18 is_stmt 0 view .LVU142
+ 447 023c 184B     		ldr	r3, .L43+92
+ 448 023e 0022     		movs	r2, #0
+ 449 0240 1A70     		strb	r2, [r3]
+ 450 0242 DEE7     		b	.L13
+ 451              	.L44:
+ 452              		.align	2
+ 453              	.L43:
+ 454 0244 00000240 		.word	1073872896
+ 455 0248 00000000 		.word	.LANCHOR0
+ 456 024c 00000000 		.word	.LANCHOR7
+ 457 0250 D34D6210 		.word	274877907
+ 458 0254 00000000 		.word	adc_buffer
+ 459 0258 00000000 		.word	.LANCHOR1
+ 460 025c 00000000 		.word	.LANCHOR10
+ 461 0260 00000000 		.word	.LANCHOR2
+ 462 0264 00000000 		.word	.LANCHOR11
+ 463 0268 00000000 		.word	.LANCHOR5
+ 464 026c 00000000 		.word	.LANCHOR12
+ 465 0270 00000000 		.word	.LANCHOR3
+ 466 0274 00000000 		.word	.LANCHOR13
+ 467 0278 00000000 		.word	.LANCHOR4
+ 468 027c 00000000 		.word	.LANCHOR14
+ 469 0280 00000000 		.word	.LANCHOR6
+ 470 0284 00000000 		.word	.LANCHOR15
+ 471 0288 00000000 		.word	.LANCHOR16
+ 472 028c 00340140 		.word	1073820672
+ 473 0290 002C0140 		.word	1073818624
+ 474 0294 00000000 		.word	.LANCHOR17
+ 475 0298 5917B7D1 		.word	-776530087
+ 476 029c 00000000 		.word	.LANCHOR18
+ARM GAS  /tmp/ccTWZPvG.s 			page 13
+
+
+ 477 02a0 00000000 		.word	.LANCHOR19
+ 478 02a4 00000000 		.word	.LANCHOR20
+ 479 02a8 00000000 		.word	.LANCHOR21
+ 480 02ac 00080140 		.word	1073809408
+ 481 02b0 00000000 		.word	.LANCHOR8
+ 482 02b4 00000000 		.word	.LANCHOR9
+ 483 02b8 00000000 		.word	.LANCHOR22
+ 484 02bc 00000000 		.word	rtY_Left
+ 485 02c0 00000000 		.word	rtY_Right
+ 486              	.L22:
+ 487              		.loc 1 162 45 view .LVU143
+ 488 02c4 0022     		movs	r2, #0
+ 489              	.L15:
+ 490              		.loc 1 162 13 discriminator 8 view .LVU144
+ 491 02c6 D2B2     		uxtb	r2, r2
+ 492 02c8 6D4B     		ldr	r3, .L45
+ 493 02ca 1A70     		strb	r2, [r3]
+ 163:Src/bldc.c    ****  
+ 164:Src/bldc.c    ****   // ========================= LEFT MOTOR ============================ 
+ 165:Src/bldc.c    ****     // Get hall sensors values
+ 166:Src/bldc.c    ****     uint8_t hall_ul = !(LEFT_HALL_U_PORT->IDR & LEFT_HALL_U_PIN);
+ 494              		.loc 1 166 5 is_stmt 1 discriminator 8 view .LVU145
+ 495              		.loc 1 166 41 is_stmt 0 discriminator 8 view .LVU146
+ 496 02cc 6D4B     		ldr	r3, .L45+4
+ 497 02ce 9968     		ldr	r1, [r3, #8]
+ 498              		.loc 1 166 23 discriminator 8 view .LVU147
+ 499 02d0 11F0200F 		tst	r1, #32
+ 500 02d4 0CBF     		ite	eq
+ 501 02d6 0124     		moveq	r4, #1
+ 502 02d8 0024     		movne	r4, #0
+ 503              	.LVL3:
+ 167:Src/bldc.c    ****     uint8_t hall_vl = !(LEFT_HALL_V_PORT->IDR & LEFT_HALL_V_PIN);
+ 504              		.loc 1 167 5 is_stmt 1 discriminator 8 view .LVU148
+ 505              		.loc 1 167 41 is_stmt 0 discriminator 8 view .LVU149
+ 506 02da 9968     		ldr	r1, [r3, #8]
+ 507              		.loc 1 167 23 discriminator 8 view .LVU150
+ 508 02dc 11F0400F 		tst	r1, #64
+ 509 02e0 0CBF     		ite	eq
+ 510 02e2 0120     		moveq	r0, #1
+ 511 02e4 0020     		movne	r0, #0
+ 512              	.LVL4:
+ 168:Src/bldc.c    ****     uint8_t hall_wl = !(LEFT_HALL_W_PORT->IDR & LEFT_HALL_W_PIN);
+ 513              		.loc 1 168 5 is_stmt 1 discriminator 8 view .LVU151
+ 514              		.loc 1 168 41 is_stmt 0 discriminator 8 view .LVU152
+ 515 02e6 9B68     		ldr	r3, [r3, #8]
+ 516              		.loc 1 168 23 discriminator 8 view .LVU153
+ 517 02e8 13F0800F 		tst	r3, #128
+ 518 02ec 0CBF     		ite	eq
+ 519 02ee 0121     		moveq	r1, #1
+ 520 02f0 0021     		movne	r1, #0
+ 521              	.LVL5:
+ 169:Src/bldc.c    **** 
+ 170:Src/bldc.c    ****     /* Set motor inputs here */
+ 171:Src/bldc.c    ****     rtU_Left.b_motEna     = enableFin;
+ 522              		.loc 1 171 5 is_stmt 1 discriminator 8 view .LVU154
+ 523              		.loc 1 171 27 is_stmt 0 discriminator 8 view .LVU155
+ 524 02f2 654B     		ldr	r3, .L45+8
+ARM GAS  /tmp/ccTWZPvG.s 			page 14
+
+
+ 525 02f4 1A70     		strb	r2, [r3]
+ 172:Src/bldc.c    ****     rtU_Left.z_ctrlModReq = ctrlModReq;  
+ 526              		.loc 1 172 5 is_stmt 1 discriminator 8 view .LVU156
+ 527              		.loc 1 172 27 is_stmt 0 discriminator 8 view .LVU157
+ 528 02f6 654A     		ldr	r2, .L45+12
+ 529 02f8 1278     		ldrb	r2, [r2]	@ zero_extendqisi2
+ 530 02fa 5A70     		strb	r2, [r3, #1]
+ 173:Src/bldc.c    ****     rtU_Left.r_inpTgt     = pwml;
+ 531              		.loc 1 173 5 is_stmt 1 discriminator 8 view .LVU158
+ 532              		.loc 1 173 27 is_stmt 0 discriminator 8 view .LVU159
+ 533 02fc 644A     		ldr	r2, .L45+16
+ 534 02fe 1268     		ldr	r2, [r2]
+ 535 0300 5A80     		strh	r2, [r3, #2]	@ movhi
+ 174:Src/bldc.c    ****     rtU_Left.b_hallA      = hall_ul;
+ 536              		.loc 1 174 5 is_stmt 1 discriminator 8 view .LVU160
+ 537              		.loc 1 174 27 is_stmt 0 discriminator 8 view .LVU161
+ 538 0302 1C71     		strb	r4, [r3, #4]
+ 175:Src/bldc.c    ****     rtU_Left.b_hallB      = hall_vl;
+ 539              		.loc 1 175 5 is_stmt 1 discriminator 8 view .LVU162
+ 540              		.loc 1 175 27 is_stmt 0 discriminator 8 view .LVU163
+ 541 0304 5871     		strb	r0, [r3, #5]
+ 176:Src/bldc.c    ****     rtU_Left.b_hallC      = hall_wl;
+ 542              		.loc 1 176 5 is_stmt 1 discriminator 8 view .LVU164
+ 543              		.loc 1 176 27 is_stmt 0 discriminator 8 view .LVU165
+ 544 0306 9971     		strb	r1, [r3, #6]
+ 177:Src/bldc.c    ****     rtU_Left.i_phaAB      = curL_phaA;
+ 545              		.loc 1 177 5 is_stmt 1 discriminator 8 view .LVU166
+ 546              		.loc 1 177 27 is_stmt 0 discriminator 8 view .LVU167
+ 547 0308 624A     		ldr	r2, .L45+20
+ 548 030a 1288     		ldrh	r2, [r2]
+ 549 030c 1A81     		strh	r2, [r3, #8]	@ movhi
+ 178:Src/bldc.c    ****     rtU_Left.i_phaBC      = curL_phaB;
+ 550              		.loc 1 178 5 is_stmt 1 discriminator 8 view .LVU168
+ 551              		.loc 1 178 27 is_stmt 0 discriminator 8 view .LVU169
+ 552 030e 624A     		ldr	r2, .L45+24
+ 553 0310 1288     		ldrh	r2, [r2]
+ 554 0312 5A81     		strh	r2, [r3, #10]	@ movhi
+ 179:Src/bldc.c    ****     rtU_Left.i_DCLink     = curL_DC;
+ 555              		.loc 1 179 5 is_stmt 1 discriminator 8 view .LVU170
+ 556              		.loc 1 179 27 is_stmt 0 discriminator 8 view .LVU171
+ 557 0314 614A     		ldr	r2, .L45+28
+ 558 0316 1288     		ldrh	r2, [r2]
+ 559 0318 9A81     		strh	r2, [r3, #12]	@ movhi
+ 180:Src/bldc.c    ****     // rtU_Left.a_mechAngle   = ...; // Angle input in DEGREES [0,360] in fixdt(1,16,4) data type. 
+ 181:Src/bldc.c    ****     
+ 182:Src/bldc.c    ****     /* Step the controller */
+ 183:Src/bldc.c    ****     #ifdef MOTOR_LEFT_ENA    
+ 184:Src/bldc.c    ****     BLDC_controller_step(rtM_Left);
+ 560              		.loc 1 184 5 is_stmt 1 discriminator 8 view .LVU172
+ 561 031a 614B     		ldr	r3, .L45+32
+ 562 031c 1868     		ldr	r0, [r3]
+ 563              	.LVL6:
+ 564              		.loc 1 184 5 is_stmt 0 discriminator 8 view .LVU173
+ 565 031e FFF7FEFF 		bl	BLDC_controller_step
+ 566              	.LVL7:
+ 185:Src/bldc.c    ****     #endif
+ 186:Src/bldc.c    **** 
+ARM GAS  /tmp/ccTWZPvG.s 			page 15
+
+
+ 187:Src/bldc.c    ****     /* Get motor outputs here */
+ 188:Src/bldc.c    ****     ul            = rtY_Left.DC_phaA;
+ 567              		.loc 1 188 5 is_stmt 1 discriminator 8 view .LVU174
+ 568              		.loc 1 188 29 is_stmt 0 discriminator 8 view .LVU175
+ 569 0322 604B     		ldr	r3, .L45+36
+ 570 0324 B3F90010 		ldrsh	r1, [r3]
+ 571              	.LVL8:
+ 189:Src/bldc.c    ****     vl            = rtY_Left.DC_phaB;
+ 572              		.loc 1 189 5 is_stmt 1 discriminator 8 view .LVU176
+ 573              		.loc 1 189 29 is_stmt 0 discriminator 8 view .LVU177
+ 574 0328 B3F90220 		ldrsh	r2, [r3, #2]
+ 575              	.LVL9:
+ 190:Src/bldc.c    ****     wl            = rtY_Left.DC_phaC;
+ 576              		.loc 1 190 5 is_stmt 1 discriminator 8 view .LVU178
+ 577              		.loc 1 190 29 is_stmt 0 discriminator 8 view .LVU179
+ 578 032c B3F90430 		ldrsh	r3, [r3, #4]
+ 579              	.LVL10:
+ 191:Src/bldc.c    ****   // errCodeLeft  = rtY_Left.z_errCode;
+ 192:Src/bldc.c    ****   // motSpeedLeft = rtY_Left.n_mot;
+ 193:Src/bldc.c    ****   // motAngleLeft = rtY_Left.a_elecAngle;
+ 194:Src/bldc.c    **** 
+ 195:Src/bldc.c    ****     /* Apply commands */
+ 196:Src/bldc.c    ****     LEFT_TIM->LEFT_TIM_U    = (uint16_t)CLAMP(ul + pwm_res / 2, pwm_margin, pwm_res-pwm_margin);
+ 580              		.loc 1 196 5 is_stmt 1 discriminator 8 view .LVU180
+ 581              		.loc 1 196 31 is_stmt 0 discriminator 8 view .LVU181
+ 582 0330 40F27A30 		movw	r0, #890
+ 583 0334 8142     		cmp	r1, r0
+ 584 0336 0BDC     		bgt	.L25
+ 585              		.loc 1 196 31 discriminator 2 view .LVU182
+ 586 0338 A0F2F460 		subw	r0, r0, #1780
+ 587 033c 8142     		cmp	r1, r0
+ 588 033e 17DB     		blt	.L26
+ 589              		.loc 1 196 41 discriminator 4 view .LVU183
+ 590 0340 01F57A71 		add	r1, r1, #1000
+ 591              	.LVL11:
+ 592              		.loc 1 196 41 discriminator 4 view .LVU184
+ 593 0344 89B2     		uxth	r1, r1
+ 594              	.LVL12:
+ 595              		.loc 1 196 41 discriminator 4 view .LVU185
+ 596 0346 05E0     		b	.L16
+ 597              	.LVL13:
+ 598              	.L23:
+ 162:Src/bldc.c    ****  
+ 599              		.loc 1 162 45 view .LVU186
+ 600 0348 0022     		movs	r2, #0
+ 601 034a BCE7     		b	.L15
+ 602              	.L24:
+ 603 034c 0122     		movs	r2, #1
+ 604 034e BAE7     		b	.L15
+ 605              	.LVL14:
+ 606              	.L25:
+ 607              		.loc 1 196 31 view .LVU187
+ 608 0350 40F26271 		movw	r1, #1890
+ 609              	.LVL15:
+ 610              	.L16:
+ 611              		.loc 1 196 29 discriminator 8 view .LVU188
+ 612 0354 5448     		ldr	r0, .L45+40
+ARM GAS  /tmp/ccTWZPvG.s 			page 16
+
+
+ 613 0356 4163     		str	r1, [r0, #52]
+ 614              	.LVL16:
+ 197:Src/bldc.c    ****     LEFT_TIM->LEFT_TIM_V    = (uint16_t)CLAMP(vl + pwm_res / 2, pwm_margin, pwm_res-pwm_margin);
+ 615              		.loc 1 197 5 is_stmt 1 discriminator 8 view .LVU189
+ 616              		.loc 1 197 31 is_stmt 0 discriminator 8 view .LVU190
+ 617 0358 40F27A31 		movw	r1, #890
+ 618 035c 8A42     		cmp	r2, r1
+ 619 035e 09DC     		bgt	.L27
+ 620              		.loc 1 197 31 discriminator 2 view .LVU191
+ 621 0360 A1F2F461 		subw	r1, r1, #1780
+ 622 0364 8A42     		cmp	r2, r1
+ 623 0366 15DB     		blt	.L28
+ 624              		.loc 1 197 41 discriminator 4 view .LVU192
+ 625 0368 02F57A72 		add	r2, r2, #1000
+ 626              	.LVL17:
+ 627              		.loc 1 197 41 discriminator 4 view .LVU193
+ 628 036c 92B2     		uxth	r2, r2
+ 629              	.LVL18:
+ 630              		.loc 1 197 41 discriminator 4 view .LVU194
+ 631 036e 03E0     		b	.L17
+ 632              	.LVL19:
+ 633              	.L26:
+ 196:Src/bldc.c    ****     LEFT_TIM->LEFT_TIM_V    = (uint16_t)CLAMP(vl + pwm_res / 2, pwm_margin, pwm_res-pwm_margin);
+ 634              		.loc 1 196 31 view .LVU195
+ 635 0370 6E21     		movs	r1, #110
+ 636              	.LVL20:
+ 196:Src/bldc.c    ****     LEFT_TIM->LEFT_TIM_V    = (uint16_t)CLAMP(vl + pwm_res / 2, pwm_margin, pwm_res-pwm_margin);
+ 637              		.loc 1 196 31 view .LVU196
+ 638 0372 EFE7     		b	.L16
+ 639              	.LVL21:
+ 640              	.L27:
+ 641              		.loc 1 197 31 view .LVU197
+ 642 0374 40F26272 		movw	r2, #1890
+ 643              	.LVL22:
+ 644              	.L17:
+ 645              		.loc 1 197 29 discriminator 8 view .LVU198
+ 646 0378 4B49     		ldr	r1, .L45+40
+ 647 037a 8A63     		str	r2, [r1, #56]
+ 198:Src/bldc.c    ****     LEFT_TIM->LEFT_TIM_W    = (uint16_t)CLAMP(wl + pwm_res / 2, pwm_margin, pwm_res-pwm_margin);
+ 648              		.loc 1 198 5 is_stmt 1 discriminator 8 view .LVU199
+ 649              		.loc 1 198 31 is_stmt 0 discriminator 8 view .LVU200
+ 650 037c 40F27A32 		movw	r2, #890
+ 651 0380 9342     		cmp	r3, r2
+ 652 0382 09DC     		bgt	.L29
+ 653              		.loc 1 198 31 discriminator 2 view .LVU201
+ 654 0384 A2F2F462 		subw	r2, r2, #1780
+ 655 0388 9342     		cmp	r3, r2
+ 656 038a 49DB     		blt	.L30
+ 657              		.loc 1 198 41 discriminator 4 view .LVU202
+ 658 038c 03F57A73 		add	r3, r3, #1000
+ 659              	.LVL23:
+ 660              		.loc 1 198 41 discriminator 4 view .LVU203
+ 661 0390 9BB2     		uxth	r3, r3
+ 662              	.LVL24:
+ 663              		.loc 1 198 41 discriminator 4 view .LVU204
+ 664 0392 03E0     		b	.L18
+ 665              	.LVL25:
+ARM GAS  /tmp/ccTWZPvG.s 			page 17
+
+
+ 666              	.L28:
+ 197:Src/bldc.c    ****     LEFT_TIM->LEFT_TIM_V    = (uint16_t)CLAMP(vl + pwm_res / 2, pwm_margin, pwm_res-pwm_margin);
+ 667              		.loc 1 197 31 view .LVU205
+ 668 0394 6E22     		movs	r2, #110
+ 669              	.LVL26:
+ 197:Src/bldc.c    ****     LEFT_TIM->LEFT_TIM_V    = (uint16_t)CLAMP(vl + pwm_res / 2, pwm_margin, pwm_res-pwm_margin);
+ 670              		.loc 1 197 31 view .LVU206
+ 671 0396 EFE7     		b	.L17
+ 672              	.L29:
+ 673              		.loc 1 198 31 view .LVU207
+ 674 0398 40F26273 		movw	r3, #1890
+ 675              	.LVL27:
+ 676              	.L18:
+ 677              		.loc 1 198 29 discriminator 8 view .LVU208
+ 678 039c 424A     		ldr	r2, .L45+40
+ 679 039e D363     		str	r3, [r2, #60]
+ 199:Src/bldc.c    ****   // =================================================================
+ 200:Src/bldc.c    ****   
+ 201:Src/bldc.c    **** 
+ 202:Src/bldc.c    ****   // ========================= RIGHT MOTOR ===========================  
+ 203:Src/bldc.c    ****     // Get hall sensors values
+ 204:Src/bldc.c    ****     uint8_t hall_ur = !(RIGHT_HALL_U_PORT->IDR & RIGHT_HALL_U_PIN);
+ 680              		.loc 1 204 5 is_stmt 1 discriminator 8 view .LVU209
+ 681              		.loc 1 204 42 is_stmt 0 discriminator 8 view .LVU210
+ 682 03a0 424B     		ldr	r3, .L45+44
+ 683 03a2 9A68     		ldr	r2, [r3, #8]
+ 684              		.loc 1 204 23 discriminator 8 view .LVU211
+ 685 03a4 12F4806F 		tst	r2, #1024
+ 686 03a8 0CBF     		ite	eq
+ 687 03aa 0120     		moveq	r0, #1
+ 688 03ac 0020     		movne	r0, #0
+ 689              	.LVL28:
+ 205:Src/bldc.c    ****     uint8_t hall_vr = !(RIGHT_HALL_V_PORT->IDR & RIGHT_HALL_V_PIN);
+ 690              		.loc 1 205 5 is_stmt 1 discriminator 8 view .LVU212
+ 691              		.loc 1 205 42 is_stmt 0 discriminator 8 view .LVU213
+ 692 03ae 9A68     		ldr	r2, [r3, #8]
+ 693              		.loc 1 205 23 discriminator 8 view .LVU214
+ 694 03b0 12F4006F 		tst	r2, #2048
+ 695 03b4 0CBF     		ite	eq
+ 696 03b6 0121     		moveq	r1, #1
+ 697 03b8 0021     		movne	r1, #0
+ 698              	.LVL29:
+ 206:Src/bldc.c    ****     uint8_t hall_wr = !(RIGHT_HALL_W_PORT->IDR & RIGHT_HALL_W_PIN);
+ 699              		.loc 1 206 5 is_stmt 1 discriminator 8 view .LVU215
+ 700              		.loc 1 206 42 is_stmt 0 discriminator 8 view .LVU216
+ 701 03ba 9B68     		ldr	r3, [r3, #8]
+ 702              		.loc 1 206 23 discriminator 8 view .LVU217
+ 703 03bc 13F4805F 		tst	r3, #4096
+ 704 03c0 0CBF     		ite	eq
+ 705 03c2 0122     		moveq	r2, #1
+ 706 03c4 0022     		movne	r2, #0
+ 707              	.LVL30:
+ 207:Src/bldc.c    **** 
+ 208:Src/bldc.c    ****     /* Set motor inputs here */
+ 209:Src/bldc.c    ****     rtU_Right.b_motEna      = enableFin;
+ 708              		.loc 1 209 5 is_stmt 1 discriminator 8 view .LVU218
+ 709              		.loc 1 209 29 is_stmt 0 discriminator 8 view .LVU219
+ARM GAS  /tmp/ccTWZPvG.s 			page 18
+
+
+ 710 03c6 3A4B     		ldr	r3, .L45+48
+ 711 03c8 2D4C     		ldr	r4, .L45
+ 712              	.LVL31:
+ 713              		.loc 1 209 29 discriminator 8 view .LVU220
+ 714 03ca 2478     		ldrb	r4, [r4]	@ zero_extendqisi2
+ 715 03cc 1C70     		strb	r4, [r3]
+ 210:Src/bldc.c    ****     rtU_Right.z_ctrlModReq  = ctrlModReq;
+ 716              		.loc 1 210 5 is_stmt 1 discriminator 8 view .LVU221
+ 717              		.loc 1 210 29 is_stmt 0 discriminator 8 view .LVU222
+ 718 03ce 2F4C     		ldr	r4, .L45+12
+ 719 03d0 2478     		ldrb	r4, [r4]	@ zero_extendqisi2
+ 720 03d2 5C70     		strb	r4, [r3, #1]
+ 211:Src/bldc.c    ****     rtU_Right.r_inpTgt      = pwmr;
+ 721              		.loc 1 211 5 is_stmt 1 discriminator 8 view .LVU223
+ 722              		.loc 1 211 29 is_stmt 0 discriminator 8 view .LVU224
+ 723 03d4 374C     		ldr	r4, .L45+52
+ 724 03d6 2468     		ldr	r4, [r4]
+ 725 03d8 5C80     		strh	r4, [r3, #2]	@ movhi
+ 212:Src/bldc.c    ****     rtU_Right.b_hallA       = hall_ur;
+ 726              		.loc 1 212 5 is_stmt 1 discriminator 8 view .LVU225
+ 727              		.loc 1 212 29 is_stmt 0 discriminator 8 view .LVU226
+ 728 03da 1871     		strb	r0, [r3, #4]
+ 213:Src/bldc.c    ****     rtU_Right.b_hallB       = hall_vr;
+ 729              		.loc 1 213 5 is_stmt 1 discriminator 8 view .LVU227
+ 730              		.loc 1 213 29 is_stmt 0 discriminator 8 view .LVU228
+ 731 03dc 5971     		strb	r1, [r3, #5]
+ 214:Src/bldc.c    ****     rtU_Right.b_hallC       = hall_wr;
+ 732              		.loc 1 214 5 is_stmt 1 discriminator 8 view .LVU229
+ 733              		.loc 1 214 29 is_stmt 0 discriminator 8 view .LVU230
+ 734 03de 9A71     		strb	r2, [r3, #6]
+ 215:Src/bldc.c    ****     rtU_Right.i_phaAB       = curR_phaB;
+ 735              		.loc 1 215 5 is_stmt 1 discriminator 8 view .LVU231
+ 736              		.loc 1 215 29 is_stmt 0 discriminator 8 view .LVU232
+ 737 03e0 354A     		ldr	r2, .L45+56
+ 738              	.LVL32:
+ 739              		.loc 1 215 29 discriminator 8 view .LVU233
+ 740 03e2 1288     		ldrh	r2, [r2]
+ 741 03e4 1A81     		strh	r2, [r3, #8]	@ movhi
+ 216:Src/bldc.c    ****     rtU_Right.i_phaBC       = curR_phaC;
+ 742              		.loc 1 216 5 is_stmt 1 discriminator 8 view .LVU234
+ 743              		.loc 1 216 29 is_stmt 0 discriminator 8 view .LVU235
+ 744 03e6 354A     		ldr	r2, .L45+60
+ 745 03e8 1288     		ldrh	r2, [r2]
+ 746 03ea 5A81     		strh	r2, [r3, #10]	@ movhi
+ 217:Src/bldc.c    ****     rtU_Right.i_DCLink      = curR_DC;
+ 747              		.loc 1 217 5 is_stmt 1 discriminator 8 view .LVU236
+ 748              		.loc 1 217 29 is_stmt 0 discriminator 8 view .LVU237
+ 749 03ec 344A     		ldr	r2, .L45+64
+ 750 03ee 1288     		ldrh	r2, [r2]
+ 751 03f0 9A81     		strh	r2, [r3, #12]	@ movhi
+ 218:Src/bldc.c    ****     // rtU_Right.a_mechAngle   = ...; // Angle input in DEGREES [0,360] in fixdt(1,16,4) data type.
+ 219:Src/bldc.c    ****     
+ 220:Src/bldc.c    ****     /* Step the controller */
+ 221:Src/bldc.c    ****     #ifdef MOTOR_RIGHT_ENA
+ 222:Src/bldc.c    ****     BLDC_controller_step(rtM_Right);
+ 752              		.loc 1 222 5 is_stmt 1 discriminator 8 view .LVU238
+ 753 03f2 344B     		ldr	r3, .L45+68
+ARM GAS  /tmp/ccTWZPvG.s 			page 19
+
+
+ 754              	.LVL33:
+ 755              		.loc 1 222 5 is_stmt 0 discriminator 8 view .LVU239
+ 756 03f4 1868     		ldr	r0, [r3]
+ 757              	.LVL34:
+ 758              		.loc 1 222 5 discriminator 8 view .LVU240
+ 759 03f6 FFF7FEFF 		bl	BLDC_controller_step
+ 760              	.LVL35:
+ 223:Src/bldc.c    ****     #endif
+ 224:Src/bldc.c    **** 
+ 225:Src/bldc.c    ****     /* Get motor outputs here */
+ 226:Src/bldc.c    ****     ur            = rtY_Right.DC_phaA;
+ 761              		.loc 1 226 5 is_stmt 1 discriminator 8 view .LVU241
+ 762              		.loc 1 226 30 is_stmt 0 discriminator 8 view .LVU242
+ 763 03fa 334B     		ldr	r3, .L45+72
+ 764 03fc B3F90010 		ldrsh	r1, [r3]
+ 765              	.LVL36:
+ 227:Src/bldc.c    ****     vr            = rtY_Right.DC_phaB;
+ 766              		.loc 1 227 5 is_stmt 1 discriminator 8 view .LVU243
+ 767              		.loc 1 227 30 is_stmt 0 discriminator 8 view .LVU244
+ 768 0400 B3F90220 		ldrsh	r2, [r3, #2]
+ 769              	.LVL37:
+ 228:Src/bldc.c    ****     wr            = rtY_Right.DC_phaC;
+ 770              		.loc 1 228 5 is_stmt 1 discriminator 8 view .LVU245
+ 771              		.loc 1 228 30 is_stmt 0 discriminator 8 view .LVU246
+ 772 0404 B3F90430 		ldrsh	r3, [r3, #4]
+ 773              	.LVL38:
+ 229:Src/bldc.c    ****  // errCodeRight  = rtY_Right.z_errCode;
+ 230:Src/bldc.c    ****  // motSpeedRight = rtY_Right.n_mot;
+ 231:Src/bldc.c    ****  // motAngleRight = rtY_Right.a_elecAngle;
+ 232:Src/bldc.c    **** 
+ 233:Src/bldc.c    ****     /* Apply commands */
+ 234:Src/bldc.c    ****     RIGHT_TIM->RIGHT_TIM_U  = (uint16_t)CLAMP(ur + pwm_res / 2, pwm_margin, pwm_res-pwm_margin);
+ 774              		.loc 1 234 5 is_stmt 1 discriminator 8 view .LVU247
+ 775              		.loc 1 234 31 is_stmt 0 discriminator 8 view .LVU248
+ 776 0408 40F27A30 		movw	r0, #890
+ 777 040c 8142     		cmp	r1, r0
+ 778 040e 09DC     		bgt	.L31
+ 779              		.loc 1 234 31 discriminator 2 view .LVU249
+ 780 0410 A0F2F460 		subw	r0, r0, #1780
+ 781 0414 8142     		cmp	r1, r0
+ 782 0416 15DB     		blt	.L32
+ 783              		.loc 1 234 41 discriminator 4 view .LVU250
+ 784 0418 01F57A71 		add	r1, r1, #1000
+ 785              	.LVL39:
+ 786              		.loc 1 234 41 discriminator 4 view .LVU251
+ 787 041c 89B2     		uxth	r1, r1
+ 788              	.LVL40:
+ 789              		.loc 1 234 41 discriminator 4 view .LVU252
+ 790 041e 03E0     		b	.L19
+ 791              	.LVL41:
+ 792              	.L30:
+ 198:Src/bldc.c    ****   // =================================================================
+ 793              		.loc 1 198 31 view .LVU253
+ 794 0420 6E23     		movs	r3, #110
+ 795              	.LVL42:
+ 198:Src/bldc.c    ****   // =================================================================
+ 796              		.loc 1 198 31 view .LVU254
+ARM GAS  /tmp/ccTWZPvG.s 			page 20
+
+
+ 797 0422 BBE7     		b	.L18
+ 798              	.LVL43:
+ 799              	.L31:
+ 800              		.loc 1 234 31 view .LVU255
+ 801 0424 40F26271 		movw	r1, #1890
+ 802              	.LVL44:
+ 803              	.L19:
+ 804              		.loc 1 234 29 discriminator 8 view .LVU256
+ 805 0428 2848     		ldr	r0, .L45+76
+ 806 042a 4163     		str	r1, [r0, #52]
+ 807              	.LVL45:
+ 235:Src/bldc.c    ****     RIGHT_TIM->RIGHT_TIM_V  = (uint16_t)CLAMP(vr + pwm_res / 2, pwm_margin, pwm_res-pwm_margin);
+ 808              		.loc 1 235 5 is_stmt 1 discriminator 8 view .LVU257
+ 809              		.loc 1 235 31 is_stmt 0 discriminator 8 view .LVU258
+ 810 042c 40F27A31 		movw	r1, #890
+ 811 0430 8A42     		cmp	r2, r1
+ 812 0432 09DC     		bgt	.L33
+ 813              		.loc 1 235 31 discriminator 2 view .LVU259
+ 814 0434 A1F2F461 		subw	r1, r1, #1780
+ 815 0438 8A42     		cmp	r2, r1
+ 816 043a 15DB     		blt	.L34
+ 817              		.loc 1 235 41 discriminator 4 view .LVU260
+ 818 043c 02F57A72 		add	r2, r2, #1000
+ 819              	.LVL46:
+ 820              		.loc 1 235 41 discriminator 4 view .LVU261
+ 821 0440 92B2     		uxth	r2, r2
+ 822              	.LVL47:
+ 823              		.loc 1 235 41 discriminator 4 view .LVU262
+ 824 0442 03E0     		b	.L20
+ 825              	.LVL48:
+ 826              	.L32:
+ 234:Src/bldc.c    ****     RIGHT_TIM->RIGHT_TIM_V  = (uint16_t)CLAMP(vr + pwm_res / 2, pwm_margin, pwm_res-pwm_margin);
+ 827              		.loc 1 234 31 view .LVU263
+ 828 0444 6E21     		movs	r1, #110
+ 829              	.LVL49:
+ 234:Src/bldc.c    ****     RIGHT_TIM->RIGHT_TIM_V  = (uint16_t)CLAMP(vr + pwm_res / 2, pwm_margin, pwm_res-pwm_margin);
+ 830              		.loc 1 234 31 view .LVU264
+ 831 0446 EFE7     		b	.L19
+ 832              	.LVL50:
+ 833              	.L33:
+ 834              		.loc 1 235 31 view .LVU265
+ 835 0448 40F26272 		movw	r2, #1890
+ 836              	.LVL51:
+ 837              	.L20:
+ 838              		.loc 1 235 29 discriminator 8 view .LVU266
+ 839 044c 1F49     		ldr	r1, .L45+76
+ 840 044e 8A63     		str	r2, [r1, #56]
+ 236:Src/bldc.c    ****     RIGHT_TIM->RIGHT_TIM_W  = (uint16_t)CLAMP(wr + pwm_res / 2, pwm_margin, pwm_res-pwm_margin);
+ 841              		.loc 1 236 5 is_stmt 1 discriminator 8 view .LVU267
+ 842              		.loc 1 236 31 is_stmt 0 discriminator 8 view .LVU268
+ 843 0450 40F27A32 		movw	r2, #890
+ 844 0454 9342     		cmp	r3, r2
+ 845 0456 09DC     		bgt	.L35
+ 846              		.loc 1 236 31 discriminator 2 view .LVU269
+ 847 0458 A2F2F462 		subw	r2, r2, #1780
+ 848 045c 9342     		cmp	r3, r2
+ 849 045e 0DDB     		blt	.L36
+ARM GAS  /tmp/ccTWZPvG.s 			page 21
+
+
+ 850              		.loc 1 236 41 discriminator 4 view .LVU270
+ 851 0460 03F57A73 		add	r3, r3, #1000
+ 852              	.LVL52:
+ 853              		.loc 1 236 41 discriminator 4 view .LVU271
+ 854 0464 9BB2     		uxth	r3, r3
+ 855              	.LVL53:
+ 856              		.loc 1 236 41 discriminator 4 view .LVU272
+ 857 0466 03E0     		b	.L21
+ 858              	.LVL54:
+ 859              	.L34:
+ 235:Src/bldc.c    ****     RIGHT_TIM->RIGHT_TIM_V  = (uint16_t)CLAMP(vr + pwm_res / 2, pwm_margin, pwm_res-pwm_margin);
+ 860              		.loc 1 235 31 view .LVU273
+ 861 0468 6E22     		movs	r2, #110
+ 862              	.LVL55:
+ 235:Src/bldc.c    ****     RIGHT_TIM->RIGHT_TIM_V  = (uint16_t)CLAMP(vr + pwm_res / 2, pwm_margin, pwm_res-pwm_margin);
+ 863              		.loc 1 235 31 view .LVU274
+ 864 046a EFE7     		b	.L20
+ 865              	.L35:
+ 866              		.loc 1 236 31 view .LVU275
+ 867 046c 40F26273 		movw	r3, #1890
+ 868              	.LVL56:
+ 869              	.L21:
+ 870              		.loc 1 236 29 discriminator 8 view .LVU276
+ 871 0470 164A     		ldr	r2, .L45+76
+ 872 0472 D363     		str	r3, [r2, #60]
+ 237:Src/bldc.c    ****   // =================================================================
+ 238:Src/bldc.c    **** 
+ 239:Src/bldc.c    ****   /* Indicate task complete */
+ 240:Src/bldc.c    ****   OverrunFlag = false;
+ 873              		.loc 1 240 3 is_stmt 1 discriminator 8 view .LVU277
+ 874              		.loc 1 240 15 is_stmt 0 discriminator 8 view .LVU278
+ 875 0474 164B     		ldr	r3, .L45+80
+ 876 0476 0022     		movs	r2, #0
+ 877 0478 1A70     		strb	r2, [r3]
+ 878              	.LVL57:
+ 879              	.L1:
+ 241:Src/bldc.c    ****  
+ 242:Src/bldc.c    ****  // ###############################################################################
+ 243:Src/bldc.c    **** 
+ 244:Src/bldc.c    **** }
+ 880              		.loc 1 244 1 view .LVU279
+ 881 047a 10BD     		pop	{r4, pc}
+ 882              	.LVL58:
+ 883              	.L36:
+ 236:Src/bldc.c    ****   // =================================================================
+ 884              		.loc 1 236 31 view .LVU280
+ 885 047c 6E23     		movs	r3, #110
+ 886              	.LVL59:
+ 236:Src/bldc.c    ****   // =================================================================
+ 887              		.loc 1 236 31 view .LVU281
+ 888 047e F7E7     		b	.L21
+ 889              	.L46:
+ 890              		.align	2
+ 891              	.L45:
+ 892 0480 00000000 		.word	.LANCHOR23
+ 893 0484 000C0140 		.word	1073810432
+ 894 0488 00000000 		.word	rtU_Left
+ARM GAS  /tmp/ccTWZPvG.s 			page 22
+
+
+ 895 048c 00000000 		.word	ctrlModReq
+ 896 0490 00000000 		.word	.LANCHOR24
+ 897 0494 00000000 		.word	.LANCHOR10
+ 898 0498 00000000 		.word	.LANCHOR11
+ 899 049c 00000000 		.word	.LANCHOR12
+ 900 04a0 00000000 		.word	rtM_Left
+ 901 04a4 00000000 		.word	rtY_Left
+ 902 04a8 00340140 		.word	1073820672
+ 903 04ac 00100140 		.word	1073811456
+ 904 04b0 00000000 		.word	rtU_Right
+ 905 04b4 00000000 		.word	.LANCHOR25
+ 906 04b8 00000000 		.word	.LANCHOR13
+ 907 04bc 00000000 		.word	.LANCHOR14
+ 908 04c0 00000000 		.word	.LANCHOR15
+ 909 04c4 00000000 		.word	rtM_Right
+ 910 04c8 00000000 		.word	rtY_Right
+ 911 04cc 002C0140 		.word	1073818624
+ 912 04d0 00000000 		.word	.LANCHOR22
+ 913              		.cfi_endproc
+ 914              	.LFE66:
+ 916              		.global	batVoltage
+ 917              		.global	enable
+ 918              		.global	buzzerCount
+ 919              		.global	buzzerPattern
+ 920              		.global	buzzerFreq
+ 921              		.global	pwmr
+ 922              		.global	pwml
+ 923              		.global	curR_DC
+ 924              		.global	curR_phaC
+ 925              		.global	curR_phaB
+ 926              		.global	curL_DC
+ 927              		.global	curL_phaB
+ 928              		.global	curL_phaA
+ 929              		.section	.bss.OverrunFlag.7826,"aw",%nobits
+ 930              		.set	.LANCHOR22,. + 0
+ 933              	OverrunFlag.7826:
+ 934 0000 00       		.space	1
+ 935              		.section	.bss.buzzerCount,"aw",%nobits
+ 936              		.set	.LANCHOR21,. + 0
+ 939              	buzzerCount:
+ 940 0000 00       		.space	1
+ 941              		.section	.bss.buzzerFreq,"aw",%nobits
+ 942              		.set	.LANCHOR17,. + 0
+ 945              	buzzerFreq:
+ 946 0000 00       		.space	1
+ 947              		.section	.bss.buzzerIdx,"aw",%nobits
+ 948              		.set	.LANCHOR20,. + 0
+ 951              	buzzerIdx:
+ 952 0000 00       		.space	1
+ 953              		.section	.bss.buzzerPattern,"aw",%nobits
+ 954              		.set	.LANCHOR18,. + 0
+ 957              	buzzerPattern:
+ 958 0000 00       		.space	1
+ 959              		.section	.bss.buzzerPrev,"aw",%nobits
+ 960              		.set	.LANCHOR19,. + 0
+ 963              	buzzerPrev:
+ 964 0000 00       		.space	1
+ARM GAS  /tmp/ccTWZPvG.s 			page 23
+
+
+ 965              		.section	.bss.buzzerTimer,"aw",%nobits
+ 966              		.align	2
+ 967              		.set	.LANCHOR7,. + 0
+ 970              	buzzerTimer:
+ 971 0000 00000000 		.space	4
+ 972              		.section	.bss.curL_DC,"aw",%nobits
+ 973              		.align	1
+ 974              		.set	.LANCHOR12,. + 0
+ 977              	curL_DC:
+ 978 0000 0000     		.space	2
+ 979              		.section	.bss.curL_phaA,"aw",%nobits
+ 980              		.align	1
+ 981              		.set	.LANCHOR10,. + 0
+ 984              	curL_phaA:
+ 985 0000 0000     		.space	2
+ 986              		.section	.bss.curL_phaB,"aw",%nobits
+ 987              		.align	1
+ 988              		.set	.LANCHOR11,. + 0
+ 991              	curL_phaB:
+ 992 0000 0000     		.space	2
+ 993              		.section	.bss.curR_DC,"aw",%nobits
+ 994              		.align	1
+ 995              		.set	.LANCHOR15,. + 0
+ 998              	curR_DC:
+ 999 0000 0000     		.space	2
+ 1000              		.section	.bss.curR_phaB,"aw",%nobits
+ 1001              		.align	1
+ 1002              		.set	.LANCHOR13,. + 0
+ 1005              	curR_phaB:
+ 1006 0000 0000     		.space	2
+ 1007              		.section	.bss.curR_phaC,"aw",%nobits
+ 1008              		.align	1
+ 1009              		.set	.LANCHOR14,. + 0
+ 1012              	curR_phaC:
+ 1013 0000 0000     		.space	2
+ 1014              		.section	.bss.enable,"aw",%nobits
+ 1015              		.set	.LANCHOR16,. + 0
+ 1018              	enable:
+ 1019 0000 00       		.space	1
+ 1020              		.section	.bss.enableFin,"aw",%nobits
+ 1021              		.set	.LANCHOR23,. + 0
+ 1024              	enableFin:
+ 1025 0000 00       		.space	1
+ 1026              		.section	.bss.offsetcount,"aw",%nobits
+ 1027              		.align	1
+ 1028              		.set	.LANCHOR0,. + 0
+ 1031              	offsetcount:
+ 1032 0000 0000     		.space	2
+ 1033              		.section	.bss.pwml,"aw",%nobits
+ 1034              		.align	2
+ 1035              		.set	.LANCHOR24,. + 0
+ 1038              	pwml:
+ 1039 0000 00000000 		.space	4
+ 1040              		.section	.bss.pwmr,"aw",%nobits
+ 1041              		.align	2
+ 1042              		.set	.LANCHOR25,. + 0
+ 1045              	pwmr:
+ARM GAS  /tmp/ccTWZPvG.s 			page 24
+
+
+ 1046 0000 00000000 		.space	4
+ 1047              		.section	.data.batVoltage,"aw"
+ 1048              		.align	1
+ 1049              		.set	.LANCHOR9,. + 0
+ 1052              	batVoltage:
+ 1053 0000 DF05     		.short	1503
+ 1054              		.section	.data.batVoltageFixdt,"aw"
+ 1055              		.align	2
+ 1056              		.set	.LANCHOR8,. + 0
+ 1059              	batVoltageFixdt:
+ 1060 0000 0000DF05 		.word	98500608
+ 1061              		.section	.data.offsetdcl,"aw"
+ 1062              		.align	1
+ 1063              		.set	.LANCHOR5,. + 0
+ 1066              	offsetdcl:
+ 1067 0000 D007     		.short	2000
+ 1068              		.section	.data.offsetdcr,"aw"
+ 1069              		.align	1
+ 1070              		.set	.LANCHOR6,. + 0
+ 1073              	offsetdcr:
+ 1074 0000 D007     		.short	2000
+ 1075              		.section	.data.offsetrlA,"aw"
+ 1076              		.align	1
+ 1077              		.set	.LANCHOR1,. + 0
+ 1080              	offsetrlA:
+ 1081 0000 D007     		.short	2000
+ 1082              		.section	.data.offsetrlB,"aw"
+ 1083              		.align	1
+ 1084              		.set	.LANCHOR2,. + 0
+ 1087              	offsetrlB:
+ 1088 0000 D007     		.short	2000
+ 1089              		.section	.data.offsetrrB,"aw"
+ 1090              		.align	1
+ 1091              		.set	.LANCHOR3,. + 0
+ 1094              	offsetrrB:
+ 1095 0000 D007     		.short	2000
+ 1096              		.section	.data.offsetrrC,"aw"
+ 1097              		.align	1
+ 1098              		.set	.LANCHOR4,. + 0
+ 1101              	offsetrrC:
+ 1102 0000 D007     		.short	2000
+ 1103              		.text
+ 1104              	.Letext0:
+ 1105              		.file 2 "/usr/lib/gcc/arm-none-eabi/9.2.1/include/stdint.h"
+ 1106              		.file 3 "Drivers/CMSIS/Include/core_cm3.h"
+ 1107              		.file 4 "Drivers/CMSIS/Device/ST/STM32F1xx/Include/system_stm32f1xx.h"
+ 1108              		.file 5 "Drivers/CMSIS/Device/ST/STM32F1xx/Include/stm32f103xe.h"
+ 1109              		.file 6 "/usr/lib/gcc/arm-none-eabi/9.2.1/include/stddef.h"
+ 1110              		.file 7 "/usr/include/newlib/sys/_types.h"
+ 1111              		.file 8 "/usr/include/newlib/sys/reent.h"
+ 1112              		.file 9 "/usr/include/newlib/sys/lock.h"
+ 1113              		.file 10 "Inc/defines.h"
+ 1114              		.file 11 "Inc/rtwtypes.h"
+ 1115              		.file 12 "Inc/BLDC_controller.h"
+ 1116              		.file 13 "Drivers/STM32F1xx_HAL_Driver/Inc/stm32f1xx_hal_gpio.h"
+ 1117              		.file 14 "Inc/util.h"
+ARM GAS  /tmp/ccTWZPvG.s 			page 25
+
+
+DEFINED SYMBOLS
+                            *ABS*:0000000000000000 bldc.c
+     /tmp/ccTWZPvG.s:16     .text.DMA1_Channel1_IRQHandler:0000000000000000 $t
+     /tmp/ccTWZPvG.s:24     .text.DMA1_Channel1_IRQHandler:0000000000000000 DMA1_Channel1_IRQHandler
+     /tmp/ccTWZPvG.s:454    .text.DMA1_Channel1_IRQHandler:0000000000000244 $d
+     /tmp/ccTWZPvG.s:488    .text.DMA1_Channel1_IRQHandler:00000000000002c4 $t
+     /tmp/ccTWZPvG.s:892    .text.DMA1_Channel1_IRQHandler:0000000000000480 $d
+     /tmp/ccTWZPvG.s:1052   .data.batVoltage:0000000000000000 batVoltage
+     /tmp/ccTWZPvG.s:1018   .bss.enable:0000000000000000 enable
+     /tmp/ccTWZPvG.s:939    .bss.buzzerCount:0000000000000000 buzzerCount
+     /tmp/ccTWZPvG.s:957    .bss.buzzerPattern:0000000000000000 buzzerPattern
+     /tmp/ccTWZPvG.s:945    .bss.buzzerFreq:0000000000000000 buzzerFreq
+     /tmp/ccTWZPvG.s:1045   .bss.pwmr:0000000000000000 pwmr
+     /tmp/ccTWZPvG.s:1038   .bss.pwml:0000000000000000 pwml
+     /tmp/ccTWZPvG.s:998    .bss.curR_DC:0000000000000000 curR_DC
+     /tmp/ccTWZPvG.s:1012   .bss.curR_phaC:0000000000000000 curR_phaC
+     /tmp/ccTWZPvG.s:1005   .bss.curR_phaB:0000000000000000 curR_phaB
+     /tmp/ccTWZPvG.s:977    .bss.curL_DC:0000000000000000 curL_DC
+     /tmp/ccTWZPvG.s:991    .bss.curL_phaB:0000000000000000 curL_phaB
+     /tmp/ccTWZPvG.s:984    .bss.curL_phaA:0000000000000000 curL_phaA
+     /tmp/ccTWZPvG.s:933    .bss.OverrunFlag.7826:0000000000000000 OverrunFlag.7826
+     /tmp/ccTWZPvG.s:934    .bss.OverrunFlag.7826:0000000000000000 $d
+     /tmp/ccTWZPvG.s:940    .bss.buzzerCount:0000000000000000 $d
+     /tmp/ccTWZPvG.s:946    .bss.buzzerFreq:0000000000000000 $d
+     /tmp/ccTWZPvG.s:951    .bss.buzzerIdx:0000000000000000 buzzerIdx
+     /tmp/ccTWZPvG.s:952    .bss.buzzerIdx:0000000000000000 $d
+     /tmp/ccTWZPvG.s:958    .bss.buzzerPattern:0000000000000000 $d
+     /tmp/ccTWZPvG.s:963    .bss.buzzerPrev:0000000000000000 buzzerPrev
+     /tmp/ccTWZPvG.s:964    .bss.buzzerPrev:0000000000000000 $d
+     /tmp/ccTWZPvG.s:966    .bss.buzzerTimer:0000000000000000 $d
+     /tmp/ccTWZPvG.s:970    .bss.buzzerTimer:0000000000000000 buzzerTimer
+     /tmp/ccTWZPvG.s:973    .bss.curL_DC:0000000000000000 $d
+     /tmp/ccTWZPvG.s:980    .bss.curL_phaA:0000000000000000 $d
+     /tmp/ccTWZPvG.s:987    .bss.curL_phaB:0000000000000000 $d
+     /tmp/ccTWZPvG.s:994    .bss.curR_DC:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1001   .bss.curR_phaB:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1008   .bss.curR_phaC:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1019   .bss.enable:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1024   .bss.enableFin:0000000000000000 enableFin
+     /tmp/ccTWZPvG.s:1025   .bss.enableFin:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1027   .bss.offsetcount:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1031   .bss.offsetcount:0000000000000000 offsetcount
+     /tmp/ccTWZPvG.s:1034   .bss.pwml:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1041   .bss.pwmr:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1048   .data.batVoltage:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1055   .data.batVoltageFixdt:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1059   .data.batVoltageFixdt:0000000000000000 batVoltageFixdt
+     /tmp/ccTWZPvG.s:1062   .data.offsetdcl:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1066   .data.offsetdcl:0000000000000000 offsetdcl
+     /tmp/ccTWZPvG.s:1069   .data.offsetdcr:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1073   .data.offsetdcr:0000000000000000 offsetdcr
+     /tmp/ccTWZPvG.s:1076   .data.offsetrlA:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1080   .data.offsetrlA:0000000000000000 offsetrlA
+     /tmp/ccTWZPvG.s:1083   .data.offsetrlB:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1087   .data.offsetrlB:0000000000000000 offsetrlB
+     /tmp/ccTWZPvG.s:1090   .data.offsetrrB:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1094   .data.offsetrrB:0000000000000000 offsetrrB
+ARM GAS  /tmp/ccTWZPvG.s 			page 26
+
+
+     /tmp/ccTWZPvG.s:1097   .data.offsetrrC:0000000000000000 $d
+     /tmp/ccTWZPvG.s:1101   .data.offsetrrC:0000000000000000 offsetrrC
+
+UNDEFINED SYMBOLS
+HAL_GPIO_TogglePin
+filtLowPass32
+HAL_GPIO_WritePin
+adc_buffer
+rtY_Left
+rtY_Right
+BLDC_controller_step
+rtU_Left
+ctrlModReq
+rtM_Left
+rtU_Right
+rtM_Right
